@@ -1,0 +1,57 @@
+# ─────────────────────────────────────────────────────────────
+# Home Assistant config repo — SECRETS & STATE NEVER COMMITTED
+# ─────────────────────────────────────────────────────────────
+
+# Secrets & credentials
+secrets.yaml
+**/secrets.yaml
+.storage/
+.cloud/
+nest/
+*_credentials*
+*.token
+*token*
+
+# TLS / device keys / network-security material
+*.pem
+*.key
+*.crt
+*.csr
+*.bin
+*.conf
+.*.conf
+zwavejs_nvm_backup_*.bin
+
+# Databases & runtime state (restore from HA native backup)
+*.db
+*.db-shm
+*.db-wal
+*.sql
+
+# Logs
+*.log
+*.log.*
+home-assistant.log*
+OZW_Log.txt
+
+# Caches / reproducible / runtime
+.HA_VERSION
+.ha_run.lock
+deps/
+tts/
+__pycache__/
+*.pyc
+.cache/
+
+# HACS-managed third-party code (reproducible via HACS)
+custom_components/
+
+# Archives / backups
+backups/
+*.tar
+*.tar.gz
+*.zip
+
+# ESPHome dashboard (self-managed git; covered by HA native backup)
+esphome/
+/esphome
