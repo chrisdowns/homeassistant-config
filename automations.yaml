@@ -1,0 +1,419 @@
+- id: '1732730930740'
+  alias: Master Night Noise
+  description: ''
+  triggers:
+  - at: '22:00:00'
+    trigger: time
+  - at: 09:00:00
+    trigger: time
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: template
+        value_template: '{{ now().hour == 9 and now().minute == 0 }}'
+      sequence:
+      - target:
+          entity_id: media_player.master_bedroom_tv
+        action: media_player.media_stop
+        data: {}
+    default:
+    - repeat:
+        until:
+        - condition: template
+          value_template: '{{ now().hour == 7 and now().minute == 0 }}'
+        sequence:
+        - delay: 00:01:00
+        - data:
+            entity_id:
+            - media_player.master_bedroom_tv
+          action: homeassistant.update_entity
+        - condition: template
+          value_template: '{{ states(''media_player.master_bedroom_tv'') in [''paused'',
+            ''idle'', ''off''] }}'
+        - target:
+            entity_id: media_player.master_bedroom_tv
+          data:
+            volume_level: 0.25
+          action: media_player.volume_set
+        - target:
+            entity_id: media_player.master_bedroom_tv
+          action: sonos.play_queue
+          data: {}
+  mode: restart
+- id: '1733074264311'
+  alias: Nightly Door Lock
+  triggers:
+  - at: '21:00:00'
+    trigger: time
+  - at: '22:00:00'
+    trigger: time
+  - at: '23:00:00'
+    trigger: time
+  - at: 00:00:00
+    trigger: time
+  actions:
+  - parallel:
+    - data:
+        lock_entity: lock.level_bolt_matter
+      action: script.ensure_a_lock_is_locked
+    - data:
+        lock_entity: lock.level_bolt_matter_2
+      action: script.ensure_a_lock_is_locked
+    - data:
+        lock_entity: lock.level_bolt_matter_3
+      action: script.ensure_a_lock_is_locked
+    - data:
+        lock_entity: lock.u_bolt_pro_z_wave_smart_lock
+      action: script.ensure_a_lock_is_locked
+    - data:
+        lock_entity: lock.level_bolt_matter_4
+      action: script.ensure_a_lock_is_locked
+    - data:
+        lock_entity: lock.exercise_room_lock
+      action: script.ensure_a_lock_is_locked
+  mode: parallel
+- id: '1733102185928'
+  alias: Water Leak
+  description: ''
+  triggers:
+  - type: moist
+    device_id: 280bd01a7f94f58d60ed81694e31244d
+    entity_id: e4f002722f3e0484a56acf1b9144f96f
+    domain: binary_sensor
+    trigger: device
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 3
+  - type: moist
+    device_id: d7e9048de2202ac515a433dd6b7f78af
+    entity_id: b3b68dcd3c87b4760562d7ba42190582
+    domain: binary_sensor
+    trigger: device
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 5
+  - type: moist
+    device_id: ff060102ff7687bb95408bc853589e83
+    entity_id: 67bb31fcbd7b09aec2d923931957fc5c
+    domain: binary_sensor
+    trigger: device
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 5
+  - type: moist
+    device_id: eac67d3769ae4987702012f9fe11e452
+    entity_id: 16ac49879b070523e6ea35fe89d0f711
+    domain: binary_sensor
+    trigger: device
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 5
+  - type: moist
+    device_id: a6059fb7b4b737e2dc27f7dcab37c6ed
+    entity_id: 9a583850f32babd0283574122cd5fbc6
+    domain: binary_sensor
+    trigger: device
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 5
+  - type: moist
+    device_id: 0ec78bd7d92401b21079ab31ff3d1a87
+    entity_id: 3d9bf3111c667d0d2214b3e4e5874c09
+    domain: binary_sensor
+    trigger: device
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 5
+  - type: moist
+    device_id: 2609d9e80a486803d4258453a9b86a77
+    entity_id: 2573b28ef0907bcff8d3013f837db76d
+    domain: binary_sensor
+    trigger: device
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 5
+  - type: moist
+    device_id: fc52035ca276ae696ef0d4365ef25a58
+    entity_id: d57b5a6d7fa4ca3ae7421aee637ab6bc
+    domain: binary_sensor
+    trigger: device
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 5
+  - type: moist
+    device_id: 31f4c402b475b5d8c34ce2e51a3bc85f
+    entity_id: 48e99bea84b78d1257643b3ee464c536
+    domain: binary_sensor
+    trigger: device
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 5
+  - type: moist
+    device_id: 0c33843ed16909d60d701037eb4486d0
+    entity_id: 1af54a3209a8dbf3f57ed05db41e1223
+    domain: binary_sensor
+    trigger: device
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 5
+  conditions: []
+  actions:
+  - action: notify.mobile_app_pixel_9_pro_xl
+    metadata: {}
+    data:
+      message: Water Leak detected by {{ trigger.to_state.attributes.friendly_name
+        }}
+      title: Water Leak detected by {{ trigger.to_state.attributes.friendly_name }}
+  - action: notify.persistent_notification
+    metadata: {}
+    data:
+      message: Water Leak detected by {{ trigger.to_state.attributes.friendly_name
+        }}
+      title: Water Leak detected by {{ trigger.to_state.attributes.friendly_name }}
+  - action: notify.notify
+    metadata: {}
+    data:
+      message: Water Leak detected by {{ trigger.to_state.attributes.friendly_name
+        }}
+      title: Water Leak detected by {{ trigger.to_state.attributes.friendly_name }}
+  mode: single
+- id: '1733192926013'
+  alias: Water Leak Batteries
+  description: ''
+  triggers:
+  - type: battery_level
+    device_id: d7e9048de2202ac515a433dd6b7f78af
+    entity_id: 915d9aa5e91efab02a09e083b31101c2
+    domain: sensor
+    trigger: device
+    below: 10
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 10
+  - type: battery_level
+    device_id: 280bd01a7f94f58d60ed81694e31244d
+    entity_id: 07853a99f358f65b016d3c44e6e47298
+    domain: sensor
+    trigger: device
+    below: 10
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 10
+  - type: battery_level
+    device_id: ff060102ff7687bb95408bc853589e83
+    entity_id: 8cfee56484c61fc85390d042fead8021
+    domain: sensor
+    trigger: device
+    below: 10
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 10
+  - type: battery_level
+    device_id: eac67d3769ae4987702012f9fe11e452
+    entity_id: 5fb1657a73cf079e345421b28fa89a64
+    domain: sensor
+    trigger: device
+    below: 10
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 10
+  - type: battery_level
+    device_id: a6059fb7b4b737e2dc27f7dcab37c6ed
+    entity_id: 3792dd8d5fd3eb1b4f46bd01e3ab5cc9
+    domain: sensor
+    trigger: device
+    below: 10
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 10
+  - type: battery_level
+    device_id: 0ec78bd7d92401b21079ab31ff3d1a87
+    entity_id: a6c2d2465ba98728b47617aa7f2b5bed
+    domain: sensor
+    trigger: device
+    below: 10
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 10
+  - type: battery_level
+    device_id: 2609d9e80a486803d4258453a9b86a77
+    entity_id: 46be12909c7ab74b723aa228164fef32
+    domain: sensor
+    trigger: device
+    below: 10
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 10
+  - type: battery_level
+    device_id: fc52035ca276ae696ef0d4365ef25a58
+    entity_id: c0f7d2710b98b2c0f74107ee292d3139
+    domain: sensor
+    trigger: device
+    below: 10
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 10
+  - type: battery_level
+    device_id: 31f4c402b475b5d8c34ce2e51a3bc85f
+    entity_id: d045bad3ded9a234185edf9180011a61
+    domain: sensor
+    trigger: device
+    below: 10
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 10
+  - type: battery_level
+    device_id: 0c33843ed16909d60d701037eb4486d0
+    entity_id: 20ac4e983e7aa215bb31b11459980025
+    domain: sensor
+    trigger: device
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 10
+    below: 10
+  conditions: []
+  actions:
+  - action: notify.mobile_app_pixel_9_pro_xl
+    metadata: {}
+    data:
+      message: Check Batteries - {{ trigger.to_state.attributes.friendly_name }}
+      title: Low batteries - {{ trigger.to_state.attributes.friendly_name }}
+  - action: notify.persistent_notification
+    metadata: {}
+    data:
+      message: Check batteries - {{ trigger.to_state.attributes.friendly_name }}
+      title: Check batteries - {{ trigger.to_state.attributes.friendly_name }}
+  mode: single
+- id: '1736646895746'
+  alias: Keep Switches ON
+  description: Automatically turn outlets back on if they are switched off.
+  triggers:
+  - entity_id:
+    - switch.master_outlets
+    - switch.downstairs_hallway
+    - switch.living_room_floor_plugs
+    to: 'off'
+    trigger: state
+  actions:
+  - target:
+      entity_id:
+      - switch.master_outlets
+      - switch.downstairs_hallway
+      - switch.living_room_floor_plugs
+    action: switch.turn_on
+  mode: single
+- id: '1759633138750'
+  alias: GFCI Canaries – Notify on State Change (true state only)
+  triggers:
+  - event_type: state_changed
+    trigger: event
+  conditions:
+  - condition: template
+    value_template: '{{ trigger.event.data.entity_id in member_set }}
+
+      '
+  - condition: template
+    value_template: "{{ trigger.event.data.old_state is not none\n   and trigger.event.data.new_state
+      is not none\n   and trigger.event.data.old_state.state != trigger.event.data.new_state.state
+      }}\n"
+  actions:
+  - data:
+      title: GFCI Canary State Changed
+      message: "{{ state_attr(trigger.event.data.entity_id, 'friendly_name')\n   or
+        trigger.event.data.entity_id }}\nchanged from \"{{ trigger.event.data.old_state.state
+        }}\" to \"{{ trigger.event.data.new_state.state }}\"."
+    action: notify.notify
+  mode: parallel
+  variables:
+    member_ids: "{{\n  (state_attr('light.gfci_canaries', 'entity_id') or []) +\n
+      \ (state_attr('group.gfci_canaries', 'entity_id') or [])\n}}"
+    member_set: '{{ member_ids | list }}'
+- id: '1759633186528'
+  alias: GFCI Canaries – 9 PM State Check
+  triggers:
+  - at: '21:00:00'
+    trigger: time
+  actions:
+  - data:
+      title: GFCI Canaries – debug
+      message: Resolved {{ plugs|length }} members from your canaries group.
+    action: notify.notify
+  - choose:
+    - conditions: '{{ not_on | length > 0 }}'
+      sequence:
+      - data:
+          title: GFCI Canaries ⚠️ Some Off at 9 PM
+          message: 'These are not ON: {{ not_on | join('', '') }}'
+        action: notify.notify
+    default:
+    - data:
+        title: GFCI Canaries ✅
+        message: All {{ plugs | length }} canaries are ON at 9 PM.
+      action: notify.notify
+  mode: single
+  variables:
+    member_ids: "{{\n  (state_attr('light.gfci_canaries', 'entity_id') or []) +\n
+      \ (state_attr('group.gfci_canaries', 'entity_id') or [])\n}}"
+    plugs: '{{ expand(member_ids) }}'
+    not_on: "{{ plugs\n   | selectattr('state', 'ne', 'on')\n   | map(attribute='name')\n
+      \  | list }}"
+- id: 0139eecc49564b9cbb54ae29c7785ea4
+  alias: Lock Usage Notification
+  description: Notify admin when any lock is toggled, with user attribution
+  triggers:
+  - platform: state
+    entity_id:
+    - lock.level_bolt_matter
+    - lock.level_bolt_matter_2
+    - lock.level_bolt_matter_3
+    - lock.level_bolt_matter_4
+    - lock.u_bolt_pro_z_wave_smart_lock
+    - lock.exercise_room_lock
+    to:
+    - locked
+    - unlocked
+  conditions: []
+  actions:
+  - variables:
+      user_map:
+        7e22f9c9f122494f88e2b40d6d63007f: eedowns
+        2bd3439aeb1347878ee12894e7d80b88: cndowns
+        94047682c37040ffb8f81fb30231cf20: mmdowns
+        4afda05ca7884aa9bc278eabc2cd3b8b: cdowns
+        6dfa2c472f1248b5b3912ee6f147bcc1: emmy
+        3fcc4a584aed4394925675d8330fac74: meghan
+      who: '{{ user_map.get(trigger.to_state.context.user_id, ''physical/unknown'')
+        }}'
+      lock_name: '{{ trigger.to_state.attributes.friendly_name }}'
+      new_state: '{{ trigger.to_state.state }}'
+  - data:
+      title: Lock {{ new_state | title }}
+      message: '{{ lock_name }} was {{ new_state }} by {{ who }}'
+    action: notify.mobile_app_chriss_iphone
+  - data:
+      title: Lock {{ new_state | title }}
+      message: '{{ lock_name }} was {{ new_state }} by {{ who }}'
+    action: notify.mobile_app_pixel_9_pro_xl
+  mode: parallel
+  max: 10
