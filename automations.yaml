@@ -52,27 +52,41 @@
     trigger: time
   - at: 00:00:00
     trigger: time
+  variables:
+    locks:
+    - lock.level_bolt_matter
+    - lock.level_bolt_matter_2
+    - lock.level_bolt_matter_3
+    - lock.level_bolt_matter_4
+    - lock.u_bolt_pro_z_wave_smart_lock
+    - lock.exercise_room_lock
   actions:
-  - parallel:
+  - repeat:
+      for_each: '{{ locks }}'
+      sequence:
+      - data:
+          lock_entity: '{{ repeat.item }}'
+          notify: false
+        action: script.ensure_a_lock_is_locked
+  - variables:
+      not_locked: "{% set ns = namespace(bad=[]) %}\n{% for l in locks %}\n  {% if
+        not is_state(l, 'locked') %}\n    {% set ns.bad = ns.bad + [state_attr(l, 'friendly_name')
+        or l] %}\n  {% endif %}\n{% endfor %}\n{{ ns.bad }}"
+  - choose:
+    - conditions:
+      - condition: template
+        value_template: '{{ not_locked | length > 0 }}'
+      sequence:
+      - data:
+          title: 🔒 Nightly lock — {{ not_locked | length }} NOT locked
+          message: 'Still unlocked: {{ not_locked | join('', '') }}'
+        action: notify.notify
+    default:
     - data:
-        lock_entity: lock.level_bolt_matter
-      action: script.ensure_a_lock_is_locked
-    - data:
-        lock_entity: lock.level_bolt_matter_2
-      action: script.ensure_a_lock_is_locked
-    - data:
-        lock_entity: lock.level_bolt_matter_3
-      action: script.ensure_a_lock_is_locked
-    - data:
-        lock_entity: lock.u_bolt_pro_z_wave_smart_lock
-      action: script.ensure_a_lock_is_locked
-    - data:
-        lock_entity: lock.level_bolt_matter_4
-      action: script.ensure_a_lock_is_locked
-    - data:
-        lock_entity: lock.exercise_room_lock
-      action: script.ensure_a_lock_is_locked
-  mode: parallel
+        title: 🔒 Nightly lock ✅
+        message: All {{ locks | length }} locks are locked.
+      action: notify.notify
+  mode: single
 - id: '1733102185928'
   alias: Water Leak
   description: ''
@@ -324,60 +338,83 @@
     action: switch.turn_on
   mode: single
 - id: '1759633138750'
-  alias: GFCI Canaries – Notify on State Change (true state only)
+  alias: GFCI Canaries – Notify on State Change
+  initial_state: true
   triggers:
-  - event_type: state_changed
-    trigger: event
+  - trigger: state
+    entity_id:
+    - light.back_porch_gfci
+    - light.back_walkway_gfci
+    - light.front_porch_outdoor
+    - light.garage_bikes_gfci
+    - light.garage_door_gfci
+    - light.garage_freezer
+    - light.garage_refrigerator
+    - light.garage_shelves_gfci
+    - light.garage_vacuum_gfci
+    - light.irrigation_control
+    - light.old_grill_area_gfci
+    - light.outdoor_kitchen_gfci
+    - light.pool_equip_gfci_1
+    - light.pool_equip_gfci_2
+    - light.right_side_electr_gfci
+    - light.water_heater_gfci
   conditions:
   - condition: template
-    value_template: '{{ trigger.event.data.entity_id in member_set }}
-
-      '
-  - condition: template
-    value_template: "{{ trigger.event.data.old_state is not none\n   and trigger.event.data.new_state
-      is not none\n   and trigger.event.data.old_state.state != trigger.event.data.new_state.state
-      }}\n"
+    value_template: "{{ trigger.from_state is not none\n   and trigger.to_state is
+      not none\n   and trigger.from_state.state != trigger.to_state.state }}\n"
   actions:
   - data:
       title: GFCI Canary State Changed
-      message: "{{ state_attr(trigger.event.data.entity_id, 'friendly_name')\n   or
-        trigger.event.data.entity_id }}\nchanged from \"{{ trigger.event.data.old_state.state
-        }}\" to \"{{ trigger.event.data.new_state.state }}\"."
+      message: "{{ trigger.to_state.attributes.friendly_name or trigger.entity_id
+        }}\nchanged from \"{{ trigger.from_state.state }}\" to \"{{ trigger.to_state.state
+        }}\"."
     action: notify.notify
   mode: parallel
-  variables:
-    member_ids: "{{\n  (state_attr('light.gfci_canaries', 'entity_id') or []) +\n
-      \ (state_attr('group.gfci_canaries', 'entity_id') or [])\n}}"
-    member_set: '{{ member_ids | list }}'
+  max: 10
 - id: '1759633186528'
   alias: GFCI Canaries – 9 PM State Check
+  initial_state: true
   triggers:
   - at: '21:00:00'
     trigger: time
+  variables:
+    canaries:
+    - light.back_porch_gfci
+    - light.back_walkway_gfci
+    - light.front_porch_outdoor
+    - light.garage_bikes_gfci
+    - light.garage_door_gfci
+    - light.garage_freezer
+    - light.garage_refrigerator
+    - light.garage_shelves_gfci
+    - light.garage_vacuum_gfci
+    - light.irrigation_control
+    - light.old_grill_area_gfci
+    - light.outdoor_kitchen_gfci
+    - light.pool_equip_gfci_1
+    - light.pool_equip_gfci_2
+    - light.right_side_electr_gfci
+    - light.water_heater_gfci
+    not_on: "{% set ns = namespace(bad=[]) %}\n{% for e in canaries %}\n  {% if not
+      is_state(e, 'on') %}\n    {% set ns.bad = ns.bad + [(state_attr(e, 'friendly_name')
+      or e) ~ ' (' ~ states(e) ~ ')'] %}\n  {% endif %}\n{% endfor %}\n{{ ns.bad }}"
   actions:
-  - data:
-      title: GFCI Canaries – debug
-      message: Resolved {{ plugs|length }} members from your canaries group.
-    action: notify.notify
   - choose:
-    - conditions: '{{ not_on | length > 0 }}'
+    - conditions:
+      - condition: template
+        value_template: '{{ not_on | length > 0 }}'
       sequence:
       - data:
-          title: GFCI Canaries ⚠️ Some Off at 9 PM
-          message: 'These are not ON: {{ not_on | join('', '') }}'
+          title: GFCI Canaries ⚠️ {{ not_on | length }} not ON at 9 PM
+          message: 'Not ON: {{ not_on | join('', '') }}'
         action: notify.notify
     default:
     - data:
         title: GFCI Canaries ✅
-        message: All {{ plugs | length }} canaries are ON at 9 PM.
+        message: All {{ canaries | length }} canaries are ON at 9 PM.
       action: notify.notify
   mode: single
-  variables:
-    member_ids: "{{\n  (state_attr('light.gfci_canaries', 'entity_id') or []) +\n
-      \ (state_attr('group.gfci_canaries', 'entity_id') or [])\n}}"
-    plugs: '{{ expand(member_ids) }}'
-    not_on: "{{ plugs\n   | selectattr('state', 'ne', 'on')\n   | map(attribute='name')\n
-      \  | list }}"
 - id: 0139eecc49564b9cbb54ae29c7785ea4
   alias: Lock Usage Notification
   description: Notify admin when any lock is toggled, with user attribution
