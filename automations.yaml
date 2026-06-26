@@ -61,6 +61,9 @@
     - lock.u_bolt_pro_z_wave_smart_lock
     - lock.exercise_room_lock
   actions:
+  - action: timer.start
+    target:
+      entity_id: timer.nightly_locking
   - repeat:
       for_each: '{{ locks }}'
       sequence:
@@ -86,6 +89,9 @@
         title: 🔒 Nightly lock ✅
         message: All {{ locks | length }} locks are locked.
       action: notify.notify
+  - action: timer.cancel
+    target:
+      entity_id: timer.nightly_locking
   mode: single
 - id: '1733102185928'
   alias: Water Leak
@@ -430,7 +436,9 @@
     to:
     - locked
     - unlocked
-  conditions: []
+  conditions:
+  - condition: template
+    value_template: "{{ not is_state('timer.nightly_locking', 'active') }}"
   actions:
   - variables:
       user_map:
