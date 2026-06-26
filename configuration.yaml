@@ -19,3 +19,11 @@ input_select:
       - "Kitchen"
     initial: "Living Room"
     icon: mdi:home
+
+# Active while Nightly Door Lock is locking, so Lock Usage Notification can
+# suppress its per-lock pings for the auto-lock. Self-expiring (15 min cap)
+# so it can never get stuck on across a restart.
+timer:
+  nightly_locking:
+    name: Nightly locking in progress
+    duration: "00:15:00"
