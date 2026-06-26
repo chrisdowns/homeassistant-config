@@ -5,9 +5,13 @@ ensure_a_lock_is_locked:
     lock_entity:
       description: Lock entity_id
       example: lock.front_door
+    notify:
+      description: Whether this script sends its own per-lock success/failure notifications. Set false when a caller (e.g. Nightly Door Lock) sends its own summary.
+      example: true
   sequence:
   - variables:
       name: '{{ state_attr(lock_entity, ''friendly_name'') or lock_entity }}'
+      notify: '{{ notify if notify is defined else true }}'
       tries: 3
       per_try_timeout: 00:00:35
       settle_after_lock: 00:00:02
@@ -33,10 +37,14 @@ ensure_a_lock_is_locked:
           - wait_template: '{{ is_state(lock_entity, ''locked'') }}'
             timeout: '{{ stable_for }}'
             continue_on_timeout: false
-          - data:
-              title: Lock succeeded
-              message: '{{ name }} is locked ✅'
-            action: notify.notify
+          - if:
+            - condition: template
+              value_template: '{{ notify }}'
+            then:
+            - data:
+                title: Lock succeeded
+                message: '{{ name }} is locked ✅'
+              action: notify.notify
           - stop: Done — lock reached 'locked'
       - choose:
         - conditions:
@@ -47,7 +55,7 @@ ensure_a_lock_is_locked:
   - choose:
     - conditions:
       - condition: template
-        value_template: '{{ not is_state(lock_entity, ''locked'') }}'
+        value_template: '{{ not is_state(lock_entity, ''locked'') and notify }}'
       sequence:
       - data:
           title: Lock failed
