@@ -55,3 +55,6 @@ backups/
 # ESPHome dashboard (self-managed git; covered by HA native backup)
 esphome/
 /esphome
+
+# HACS-managed frontend plugins (Lovelace) — reproducible via HACS, like custom_components/
+www/community/
