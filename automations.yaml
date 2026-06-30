@@ -4,14 +4,16 @@
   triggers:
   - at: '22:00:00'
     trigger: time
-  - at: 09:00:00
+    id: start_noise
+  - at: '09:00:00'
     trigger: time
+    id: stop_noise
   conditions: []
   actions:
   - choose:
     - conditions:
       - condition: template
-        value_template: '{{ now().hour == 9 and now().minute == 0 }}'
+        value_template: '{{ trigger.id == ''stop_noise'' }}'
       sequence:
       - target:
           entity_id: media_player.master_bedroom_tv
@@ -21,7 +23,7 @@
     - repeat:
         until:
         - condition: template
-          value_template: '{{ now().hour == 7 and now().minute == 0 }}'
+          value_template: '{{ now().hour >= 9 and now().hour < 22 }}'
         sequence:
         - delay: 00:01:00
         - data:
@@ -53,13 +55,7 @@
   - at: 00:00:00
     trigger: time
   variables:
-    locks:
-    - lock.level_bolt_matter
-    - lock.level_bolt_matter_2
-    - lock.level_bolt_matter_3
-    - lock.level_bolt_matter_4
-    - lock.u_bolt_pro_z_wave_smart_lock
-    - lock.exercise_room_lock
+    locks: "{{ state_attr('group.door_locks', 'entity_id') | list }}"
   actions:
   - action: timer.start
     target:
@@ -385,23 +381,7 @@
   - at: '21:00:00'
     trigger: time
   variables:
-    canaries:
-    - light.back_porch_gfci
-    - light.back_walkway_gfci
-    - light.front_porch_outdoor
-    - light.garage_bikes_gfci
-    - light.garage_door_gfci
-    - light.garage_freezer
-    - light.garage_refrigerator
-    - light.garage_shelves_gfci
-    - light.garage_vacuum_gfci
-    - light.irrigation_control
-    - light.old_grill_area_gfci
-    - light.outdoor_kitchen_gfci
-    - light.pool_equip_gfci_1
-    - light.pool_equip_gfci_2
-    - light.right_side_electr_gfci
-    - light.water_heater_gfci
+    canaries: "{{ state_attr('group.gfci_canaries', 'entity_id') | list }}"
     not_on: "{% set ns = namespace(bad=[]) %}\n{% for e in canaries %}\n  {% if not
       is_state(e, 'on') %}\n    {% set ns.bad = ns.bad + [(state_attr(e, 'friendly_name')
       or e) ~ ' (' ~ states(e) ~ ')'] %}\n  {% endif %}\n{% endfor %}\n{{ ns.bad }}"
@@ -436,6 +416,7 @@
     to:
     - locked
     - unlocked
+    - jammed
   conditions:
   - condition: template
     value_template: "{{ not is_state('timer.nightly_locking', 'active') }}"
@@ -452,13 +433,15 @@
         }}'
       lock_name: '{{ trigger.to_state.attributes.friendly_name }}'
       new_state: '{{ trigger.to_state.state }}'
+      msg_title: 'Lock {{ new_state | title }}'
+      msg_body: '{{ lock_name }} was {{ new_state }} by {{ who }}'
   - data:
-      title: Lock {{ new_state | title }}
-      message: '{{ lock_name }} was {{ new_state }} by {{ who }}'
+      title: '{{ msg_title }}'
+      message: '{{ msg_body }}'
     action: notify.mobile_app_chriss_iphone
   - data:
-      title: Lock {{ new_state | title }}
-      message: '{{ lock_name }} was {{ new_state }} by {{ who }}'
+      title: '{{ msg_title }}'
+      message: '{{ msg_body }}'
     action: notify.mobile_app_pixel_9_pro_xl
   mode: parallel
   max: 10
