@@ -1,0 +1,41 @@
+# Source-of-truth entity groups. Referenced by automations via
+# state_attr('group.<name>', 'entity_id') so member lists live in one place.
+# NOTE: HA state triggers can't template their entity_id, so the trigger-based
+# automations (GFCI notify, Lock Usage) still list members literally — keep them
+# in sync with the groups below.
+
+gfci_canaries:
+  name: GFCI Canaries
+  entities:
+    - light.back_porch_gfci
+    - light.back_walkway_gfci
+    - light.front_porch_outdoor
+    - light.garage_bikes_gfci
+    - light.garage_door_gfci
+    - light.garage_freezer
+    - light.garage_refrigerator
+    - light.garage_shelves_gfci
+    - light.garage_vacuum_gfci
+    - light.irrigation_control
+    - light.old_grill_area_gfci
+    - light.outdoor_kitchen_gfci
+    - light.pool_equip_gfci_1
+    - light.pool_equip_gfci_2
+    - light.right_side_electr_gfci
+    - light.water_heater_gfci
+
+door_locks:
+  name: Door Locks
+  entities:
+    - lock.level_bolt_matter
+    - lock.level_bolt_matter_2
+    - lock.level_bolt_matter_3
+    - lock.level_bolt_matter_4
+    - lock.u_bolt_pro_z_wave_smart_lock
+    - lock.exercise_room_lock
+
+# Placeholder — add leak/moisture sensor entities here once they're re-paired,
+# then rewire the Water Leak automations to entity_id state triggers off this group.
+water_leak_sensors:
+  name: Water Leak Sensors
+  entities: []
