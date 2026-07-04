@@ -40,3 +40,4 @@ water_leak_sensors:
   name: Water Leak Sensors
   entities:
   - binary_sensor.ikea_of_sweden_badring_water_leakage_sensor
+  - binary_sensor.ikea_of_sweden_badring_water_leakage_sensor_2
