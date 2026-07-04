@@ -38,4 +38,5 @@ door_locks:
 # then rewire the Water Leak automations to entity_id state triggers off this group.
 water_leak_sensors:
   name: Water Leak Sensors
-  entities: []
+  entities:
+  - binary_sensor.ikea_of_sweden_badring_water_leakage_sensor

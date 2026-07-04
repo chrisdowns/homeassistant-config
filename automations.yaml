@@ -101,95 +101,11 @@
   alias: Water Leak
   description: ''
   triggers:
-  - type: moist
-    device_id: 280bd01a7f94f58d60ed81694e31244d
-    entity_id: e4f002722f3e0484a56acf1b9144f96f
-    domain: binary_sensor
-    trigger: device
+  - trigger: state
+    entity_id:
+    - binary_sensor.ikea_of_sweden_badring_water_leakage_sensor
+    to: 'on'
     for:
-      hours: 0
-      minutes: 0
-      seconds: 3
-  - type: moist
-    device_id: d7e9048de2202ac515a433dd6b7f78af
-    entity_id: b3b68dcd3c87b4760562d7ba42190582
-    domain: binary_sensor
-    trigger: device
-    for:
-      hours: 0
-      minutes: 0
-      seconds: 5
-  - type: moist
-    device_id: ff060102ff7687bb95408bc853589e83
-    entity_id: 67bb31fcbd7b09aec2d923931957fc5c
-    domain: binary_sensor
-    trigger: device
-    for:
-      hours: 0
-      minutes: 0
-      seconds: 5
-  - type: moist
-    device_id: eac67d3769ae4987702012f9fe11e452
-    entity_id: 16ac49879b070523e6ea35fe89d0f711
-    domain: binary_sensor
-    trigger: device
-    for:
-      hours: 0
-      minutes: 0
-      seconds: 5
-  - type: moist
-    device_id: a6059fb7b4b737e2dc27f7dcab37c6ed
-    entity_id: 9a583850f32babd0283574122cd5fbc6
-    domain: binary_sensor
-    trigger: device
-    for:
-      hours: 0
-      minutes: 0
-      seconds: 5
-  - type: moist
-    device_id: 0ec78bd7d92401b21079ab31ff3d1a87
-    entity_id: 3d9bf3111c667d0d2214b3e4e5874c09
-    domain: binary_sensor
-    trigger: device
-    for:
-      hours: 0
-      minutes: 0
-      seconds: 5
-  - type: moist
-    device_id: 2609d9e80a486803d4258453a9b86a77
-    entity_id: 2573b28ef0907bcff8d3013f837db76d
-    domain: binary_sensor
-    trigger: device
-    for:
-      hours: 0
-      minutes: 0
-      seconds: 5
-  - type: moist
-    device_id: fc52035ca276ae696ef0d4365ef25a58
-    entity_id: d57b5a6d7fa4ca3ae7421aee637ab6bc
-    domain: binary_sensor
-    trigger: device
-    for:
-      hours: 0
-      minutes: 0
-      seconds: 5
-  - type: moist
-    device_id: 31f4c402b475b5d8c34ce2e51a3bc85f
-    entity_id: 48e99bea84b78d1257643b3ee464c536
-    domain: binary_sensor
-    trigger: device
-    for:
-      hours: 0
-      minutes: 0
-      seconds: 5
-  - type: moist
-    device_id: 0c33843ed16909d60d701037eb4486d0
-    entity_id: 1af54a3209a8dbf3f57ed05db41e1223
-    domain: binary_sensor
-    trigger: device
-    for:
-      hours: 0
-      minutes: 0
       seconds: 5
   conditions: []
   actions:
@@ -216,106 +132,12 @@
   alias: Water Leak Batteries
   description: ''
   triggers:
-  - type: battery_level
-    device_id: d7e9048de2202ac515a433dd6b7f78af
-    entity_id: 915d9aa5e91efab02a09e083b31101c2
-    domain: sensor
-    trigger: device
-    below: 10
+  - trigger: numeric_state
+    entity_id:
+    - sensor.ikea_of_sweden_badring_water_leakage_sensor_battery
+    below: 20
     for:
-      hours: 0
-      minutes: 0
       seconds: 10
-  - type: battery_level
-    device_id: 280bd01a7f94f58d60ed81694e31244d
-    entity_id: 07853a99f358f65b016d3c44e6e47298
-    domain: sensor
-    trigger: device
-    below: 10
-    for:
-      hours: 0
-      minutes: 0
-      seconds: 10
-  - type: battery_level
-    device_id: ff060102ff7687bb95408bc853589e83
-    entity_id: 8cfee56484c61fc85390d042fead8021
-    domain: sensor
-    trigger: device
-    below: 10
-    for:
-      hours: 0
-      minutes: 0
-      seconds: 10
-  - type: battery_level
-    device_id: eac67d3769ae4987702012f9fe11e452
-    entity_id: 5fb1657a73cf079e345421b28fa89a64
-    domain: sensor
-    trigger: device
-    below: 10
-    for:
-      hours: 0
-      minutes: 0
-      seconds: 10
-  - type: battery_level
-    device_id: a6059fb7b4b737e2dc27f7dcab37c6ed
-    entity_id: 3792dd8d5fd3eb1b4f46bd01e3ab5cc9
-    domain: sensor
-    trigger: device
-    below: 10
-    for:
-      hours: 0
-      minutes: 0
-      seconds: 10
-  - type: battery_level
-    device_id: 0ec78bd7d92401b21079ab31ff3d1a87
-    entity_id: a6c2d2465ba98728b47617aa7f2b5bed
-    domain: sensor
-    trigger: device
-    below: 10
-    for:
-      hours: 0
-      minutes: 0
-      seconds: 10
-  - type: battery_level
-    device_id: 2609d9e80a486803d4258453a9b86a77
-    entity_id: 46be12909c7ab74b723aa228164fef32
-    domain: sensor
-    trigger: device
-    below: 10
-    for:
-      hours: 0
-      minutes: 0
-      seconds: 10
-  - type: battery_level
-    device_id: fc52035ca276ae696ef0d4365ef25a58
-    entity_id: c0f7d2710b98b2c0f74107ee292d3139
-    domain: sensor
-    trigger: device
-    below: 10
-    for:
-      hours: 0
-      minutes: 0
-      seconds: 10
-  - type: battery_level
-    device_id: 31f4c402b475b5d8c34ce2e51a3bc85f
-    entity_id: d045bad3ded9a234185edf9180011a61
-    domain: sensor
-    trigger: device
-    below: 10
-    for:
-      hours: 0
-      minutes: 0
-      seconds: 10
-  - type: battery_level
-    device_id: 0c33843ed16909d60d701037eb4486d0
-    entity_id: 20ac4e983e7aa215bb31b11459980025
-    domain: sensor
-    trigger: device
-    for:
-      hours: 0
-      minutes: 0
-      seconds: 10
-    below: 10
   conditions: []
   actions:
   - action: notify.mobile_app_pixel_9_pro_xl
