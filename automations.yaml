@@ -159,6 +159,40 @@
         2 hours - leak detection is blind there'
       title: Leak sensor offline - {{ trigger.to_state.attributes.friendly_name }}
   mode: single
+- id: '1751652000001'
+  alias: Pantry Door Alert
+  description: 'TESTING MODE: texts on every open AND close. Once verified, switch
+    to a single left-open trigger (e.g. to "on" with for: 10 min) and drop the close
+    trigger. Mobile push mirrors the SMS while the Twilio A2P campaign approval is
+    pending.'
+  triggers:
+  - trigger: state
+    entity_id:
+    - binary_sensor.aqara_door_and_window_sensor_p2_door
+    from: 'off'
+    to: 'on'
+    id: opened
+  - trigger: state
+    entity_id:
+    - binary_sensor.aqara_door_and_window_sensor_p2_door
+    from: 'on'
+    to: 'off'
+    id: closed
+  conditions: []
+  actions:
+  - action: notify.twilio_sms
+    metadata: {}
+    data:
+      message: Pantry door {{ trigger.id }} at {{ now().strftime('%-I:%M %p') }}
+      target: '+16156691817'
+  - action: notify.mobile_app_pixel_9_pro_xl
+    metadata: {}
+    data:
+      message: Pantry door {{ trigger.id }} at {{ now().strftime('%-I:%M %p') }} (SMS
+        mirror)
+      title: Pantry door {{ trigger.id }}
+  mode: queued
+  max: 10
 - id: '1733192926013'
   alias: Water Leak Batteries
   description: ''
