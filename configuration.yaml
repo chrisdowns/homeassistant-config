@@ -11,6 +11,19 @@ script: !include scripts.yaml
 scene: !include scenes.yaml
 group: !include groups.yaml
 
+# SMS alerts. Credentials live in secrets.yaml (gitignored on the Green).
+# Note: outbound SMS is blocked with error 30034 until the A2P 10DLC
+# campaign for +1-252-427-6767 is approved (rejected 2025-12, resubmission
+# pending as of 2026-07-04).
+twilio:
+  account_sid: !secret twilio_account_sid
+  auth_token: !secret twilio_auth_token
+
+notify:
+  - name: twilio_sms
+    platform: twilio_sms
+    from_number: !secret twilio_from_number
+
 input_select:
   room_selector:
     name: Room Selector
