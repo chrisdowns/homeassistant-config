@@ -38,10 +38,18 @@
           data:
             volume_level: 0.25
           action: media_player.volume_set
+          continue_on_error: true
+        - target:
+            entity_id: media_player.master_bedroom_tv
+          data:
+            repeat: all
+          action: media_player.repeat_set
+          continue_on_error: true
         - target:
             entity_id: media_player.master_bedroom_tv
           action: sonos.play_queue
           data: {}
+          continue_on_error: true
   mode: restart
 - id: '1733074264311'
   alias: Nightly Door Lock
