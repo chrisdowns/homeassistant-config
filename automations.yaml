@@ -107,6 +107,7 @@
     - binary_sensor.ikea_of_sweden_badring_water_leakage_sensor_2
     - binary_sensor.ikea_of_sweden_badring_water_leakage_sensor_3
     - binary_sensor.ikea_of_sweden_badring_water_leakage_sensor_4
+    - binary_sensor.kitchen_water_leak_sensor_kitchen_sink
     to: 'on'
     for:
       seconds: 5
@@ -141,6 +142,7 @@
     - binary_sensor.ikea_of_sweden_badring_water_leakage_sensor_2
     - binary_sensor.ikea_of_sweden_badring_water_leakage_sensor_3
     - binary_sensor.ikea_of_sweden_badring_water_leakage_sensor_4
+    - binary_sensor.kitchen_water_leak_sensor_kitchen_sink
     to: unavailable
     for:
       hours: 2
@@ -203,6 +205,7 @@
     - sensor.ikea_of_sweden_badring_water_leakage_sensor_battery_2
     - sensor.ikea_of_sweden_badring_water_leakage_sensor_battery_3
     - sensor.ikea_of_sweden_badring_water_leakage_sensor_battery_4
+    - sensor.kitchen_water_leak_sensor_kitchen_sink_battery
     below: 20
     for:
       seconds: 10
