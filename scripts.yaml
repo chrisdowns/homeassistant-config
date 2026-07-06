@@ -22,6 +22,7 @@ ensure_a_lock_is_locked:
       - target:
           entity_id: '{{ lock_entity }}'
         action: lock.lock
+        continue_on_error: true
       - delay: '{{ settle_after_lock }}'
       - wait_template: "{{ is_state(lock_entity, 'locked')\n   or is_state(lock_entity,
           'unlocking')\n   or is_state(lock_entity, 'unlocked')\n   or is_state(lock_entity,
