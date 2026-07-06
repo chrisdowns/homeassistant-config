@@ -75,6 +75,7 @@
           lock_entity: '{{ repeat.item }}'
           notify: false
         action: script.ensure_a_lock_is_locked
+        continue_on_error: true
   - variables:
       not_locked: "{% set ns = namespace(bad=[]) %}\n{% for l in locks %}\n  {% if
         not is_state(l, 'locked') %}\n    {% set ns.bad = ns.bad + [state_attr(l, 'friendly_name')
