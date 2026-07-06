@@ -44,7 +44,7 @@ water_leak_sensors:
   - binary_sensor.ikea_of_sweden_badring_water_leakage_sensor_3
   - binary_sensor.ikea_of_sweden_badring_water_leakage_sensor_4
   - binary_sensor.kitchen_water_leak_sensor_kitchen_sink
-  - binary_sensor.ikea_of_sweden_badring_water_leakage_sensor_5
+  - binary_sensor.water_leak_sensor_meg_sink
   - binary_sensor.water_leak_sensor_chris_sink
   - binary_sensor.water_leak_sensor_laundry_sink
   - binary_sensor.water_leak_sensor_refrigerator
