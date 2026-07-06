@@ -11,14 +11,6 @@ script: !include scripts.yaml
 scene: !include scenes.yaml
 group: !include groups.yaml
 
-# IKEA BADRING leak sensors only check in ~every 24h when idle (community-
-# confirmed), so ZHA's 6h default flagged the whole fleet unavailable daily.
-# 25h keeps "unavailable" meaning "actually missing". Wet alarms are
-# unaffected - the sensor wakes and transmits immediately on water contact.
-zha:
-  zha_options:
-    consider_unavailable_time_battery: 90000
-
 # SMS alerts. Credentials live in secrets.yaml (gitignored on the Green).
 # Note: outbound SMS is blocked with error 30034 until the A2P 10DLC
 # campaign for +1-252-427-6767 is approved (rejected 2025-12, resubmission
