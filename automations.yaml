@@ -62,8 +62,6 @@
     trigger: time
   - at: 00:00:00
     trigger: time
-  variables:
-    locks: '{{ state_attr(''group.door_locks'', ''entity_id'') | list }}'
   actions:
   - action: timer.start
     target:
@@ -78,16 +76,24 @@
         continue_on_error: true
   - variables:
       not_locked: "{% set ns = namespace(bad=[]) %}\n{% for l in locks %}\n  {% if
-        not is_state(l, 'locked') %}\n    {% set ns.bad = ns.bad + [state_attr(l,
-        'friendly_name') or l] %}\n  {% endif %}\n{% endfor %}\n{{ ns.bad }}"
+        states(l) not in ['locked', 'unavailable', 'unknown'] %}\n    {% set ns.bad
+        = ns.bad + [state_attr(l, 'friendly_name') or l] %}\n  {% endif %}\n{% endfor
+        %}\n{{ ns.bad }}"
+      offline: "{% set ns = namespace(off=[]) %}\n{% for l in locks %}\n  {% if states(l)
+        in ['unavailable', 'unknown'] %}\n    {% set ns.off = ns.off + [state_attr(l,
+        'friendly_name') or l] %}\n  {% endif %}\n{% endfor %}\n{{ ns.off }}"
   - choose:
     - conditions:
       - condition: template
-        value_template: '{{ not_locked | length > 0 }}'
+        value_template: '{{ (not_locked | length + offline | length) > 0 }}'
       sequence:
       - data:
-          title: "\U0001F512 Nightly lock — {{ not_locked | length }} NOT locked"
-          message: 'Still unlocked: {{ not_locked | join('', '') }}'
+          title: "\U0001F512 Nightly lock — {{ not_locked | length + offline | length
+            }} NOT confirmed locked"
+          message: '{% if not_locked | length > 0 %}Still unlocked: {{ not_locked
+            | join('', '') }}{% endif %}{% if not_locked | length > 0 and offline
+            | length > 0 %} — {% endif %}{% if offline | length > 0 %}Offline, state
+            unverified: {{ offline | join('', '') }}{% endif %}'
         action: notify.notify
     default:
     - data:
@@ -97,6 +103,8 @@
   - action: timer.cancel
     target:
       entity_id: timer.nightly_locking
+  variables:
+    locks: '{{ state_attr(''group.door_locks'', ''entity_id'') | list }}'
   mode: single
 - id: '1733102185928'
   alias: Water Leak
