@@ -87,14 +87,34 @@
       - condition: template
         value_template: '{{ (not_locked | length + offline | length) > 0 }}'
       sequence:
-      - data:
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
           title: "\U0001F512 Nightly lock — {{ not_locked | length + offline | length
             }} NOT confirmed locked"
           message: '{% if not_locked | length > 0 %}Still unlocked: {{ not_locked
             | join('', '') }}{% endif %}{% if not_locked | length > 0 and offline
             | length > 0 %} — {% endif %}{% if offline | length > 0 %}Offline, state
             unverified: {{ offline | join('', '') }}{% endif %}'
-        action: notify.notify
+          channel: Critical Home Alerts
+          importance: high
+          priority: high
+          ttl: 0
+      - action: notify.mobile_app_chriss_iphone
+        data:
+          title: "\U0001F512 Nightly lock — {{ not_locked | length + offline | length
+            }} NOT confirmed locked"
+          message: '{% if not_locked | length > 0 %}Still unlocked: {{ not_locked
+            | join('', '') }}{% endif %}{% if not_locked | length > 0 and offline
+            | length > 0 %} — {% endif %}{% if offline | length > 0 %}Offline, state
+            unverified: {{ offline | join('', '') }}{% endif %}'
+      - action: notify.persistent_notification
+        data:
+          title: "\U0001F512 Nightly lock — {{ not_locked | length + offline | length
+            }} NOT confirmed locked"
+          message: '{% if not_locked | length > 0 %}Still unlocked: {{ not_locked
+            | join('', '') }}{% endif %}{% if not_locked | length > 0 and offline
+            | length > 0 %} — {% endif %}{% if offline | length > 0 %}Offline, state
+            unverified: {{ offline | join('', '') }}{% endif %}'
     default:
     - data:
         title: "\U0001F512 Nightly lock ✅"
@@ -133,6 +153,10 @@
       message: Water Leak detected by {{ trigger.to_state.attributes.friendly_name
         }}
       title: Water Leak detected by {{ trigger.to_state.attributes.friendly_name }}
+      channel: Critical Home Alerts
+      importance: high
+      priority: high
+      ttl: 0
   - action: notify.persistent_notification
     metadata: {}
     data:
@@ -199,6 +223,10 @@
             for 2 hours - leak detection is blind there'
           title: Leak sensor offline - {{ trigger.to_state.attributes.friendly_name
             }}
+          channel: Critical Home Alerts
+          importance: high
+          priority: high
+          ttl: 0
       - action: notify.persistent_notification
         metadata: {}
         data:
@@ -224,6 +252,10 @@
           message: 'Offline over 2 hours - leak detection is blind there: {{ offline_names
             | join(", ") }}'
           title: '{{ offline_names | count }} leak sensor(s) offline'
+          channel: Critical Home Alerts
+          importance: high
+          priority: high
+          ttl: 0
       - action: notify.persistent_notification
         metadata: {}
         data:
@@ -448,6 +480,11 @@
     - data:
         title: '{{ msg_title }}'
         message: '{{ msg_body }}'
+        channel: '{{ ''Critical Home Alerts'' if notify_case == ''jammed'' else ''Locks''
+          }}'
+        importance: '{{ ''high'' if notify_case == ''jammed'' else ''default'' }}'
+        priority: high
+        ttl: 0
       action: notify.mobile_app_pixel_9_pro_xl
   mode: queued
   max: 25
@@ -525,6 +562,10 @@
       title: Lock OFFLINE
       message: '{{ trigger.to_state.name }} has been offline for 15+ minutes — no
         lock events will be seen until it reconnects'
+      channel: Critical Home Alerts
+      importance: high
+      priority: high
+      ttl: 0
     action: notify.mobile_app_pixel_9_pro_xl
   mode: parallel
   max: 10
@@ -557,6 +598,10 @@
   - data:
       title: "\U0001F319 Door still UNLOCKED"
       message: '{{ trigger.to_state.name }} has been unlocked for 10+ minutes overnight'
+      channel: Critical Home Alerts
+      importance: high
+      priority: high
+      ttl: 0
     action: notify.mobile_app_pixel_9_pro_xl
   mode: parallel
   max: 10
