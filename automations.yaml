@@ -185,6 +185,13 @@
       - condition: trigger
         id: transition
       sequence:
+      - action: notify.mobile_app_chriss_iphone
+        metadata: {}
+        data:
+          message: '{{ trigger.to_state.attributes.friendly_name }} has been offline
+            for 2 hours - leak detection is blind there'
+          title: Leak sensor offline - {{ trigger.to_state.attributes.friendly_name
+            }}
       - action: notify.mobile_app_pixel_9_pro_xl
         metadata: {}
         data:
@@ -205,6 +212,12 @@
       - condition: template
         value_template: '{{ offline_names | count > 0 }}'
       sequence:
+      - action: notify.mobile_app_chriss_iphone
+        metadata: {}
+        data:
+          message: 'Offline over 2 hours - leak detection is blind there: {{ offline_names
+            | join(", ") }}'
+          title: '{{ offline_names | count }} leak sensor(s) offline'
       - action: notify.mobile_app_pixel_9_pro_xl
         metadata: {}
         data:
