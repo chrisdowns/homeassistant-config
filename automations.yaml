@@ -605,3 +605,89 @@
     action: notify.mobile_app_pixel_9_pro_xl
   mode: parallel
   max: 10
+- id: c9e53d74a08b46bfa1f2d3c4e5f60892
+  alias: Integration Health Check
+  description: 'Closes the silent-ZHA-death gap (2026-07-05 outage killed the leak
+    fleet). On HA start: wait 5 min, then verify Zigbee/Matter/Z-Wave via mains/lock
+    sentinel entities and alert on the critical channel if any radio stack looks dead.
+    Also alerts if a Zigbee router is unavailable 15+ min (mid-run mesh/ZHA death).
+    Sentinel-based: a single dead sentinel device can false-positive Z-Wave.'
+  triggers:
+  - trigger: homeassistant
+    event: start
+    id: boot
+  - trigger: state
+    id: router_down
+    entity_id:
+    - switch.sonoff_s40lite
+    - switch.sonoff_s40lite_2
+    to: unavailable
+    for: 00:15:00
+  conditions: []
+  actions:
+  - if:
+    - condition: trigger
+      id: boot
+    then:
+    - delay: 00:05:00
+  - variables:
+      zha_dead: '{{ expand([''switch.sonoff_s40lite'', ''switch.sonoff_s40lite_2''])
+        | selectattr(''state'', ''eq'', ''unavailable'') | list | count == 2 }}'
+      matter_dead: '{{ expand([''lock.level_bolt_matter'', ''lock.level_bolt_matter_2'',
+        ''lock.level_bolt_matter_3'', ''lock.level_bolt_matter_4'']) | selectattr(''state'',
+        ''eq'', ''unavailable'') | list | count == 4 }}'
+      zwave_dead: '{{ is_state(''lock.u_bolt_pro_z_wave_smart_lock'', ''unavailable'')
+        }}'
+      probs: '{{ ([''Zigbee/ZHA''] if zha_dead else []) + ([''Matter''] if matter_dead
+        else []) + ([''Z-Wave JS''] if zwave_dead else []) }}'
+  - choose:
+    - conditions:
+      - condition: trigger
+        id: boot
+      - condition: template
+        value_template: '{{ probs | count > 0 }}'
+      sequence:
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: "\U0001F6A8 Integration check FAILED after HA restart"
+          message: 'Dead 5 min after restart: {{ probs | join('', '') }}. Check Settings
+            → Devices & Services — an integration may have silently failed to load
+            (this is how the 15h ZHA outage killed the leak fleet).'
+          channel: Critical Home Alerts
+          importance: high
+          priority: high
+          ttl: 0
+      - action: notify.mobile_app_chriss_iphone
+        data:
+          title: "\U0001F6A8 Integration check FAILED after HA restart"
+          message: 'Dead 5 min after restart: {{ probs | join('', '') }}. Check Settings
+            → Devices & Services.'
+      - action: notify.persistent_notification
+        data:
+          title: "\U0001F6A8 Integration check FAILED after HA restart"
+          message: 'Dead 5 min after restart: {{ probs | join('', '') }}. Check Settings
+            → Devices & Services.'
+    - conditions:
+      - condition: trigger
+        id: router_down
+      sequence:
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: Zigbee router OFFLINE
+          message: '{{ trigger.to_state.name }} has been offline 15+ min — mesh degraded.
+            If BOTH routers are offline, ZHA itself may be down.'
+          channel: Critical Home Alerts
+          importance: high
+          priority: high
+          ttl: 0
+      - action: notify.mobile_app_chriss_iphone
+        data:
+          title: Zigbee router OFFLINE
+          message: '{{ trigger.to_state.name }} has been offline 15+ min — mesh degraded.
+            If BOTH routers are offline, ZHA itself may be down.'
+      - action: notify.persistent_notification
+        data:
+          title: Zigbee router OFFLINE
+          message: '{{ trigger.to_state.name }} has been offline 15+ min — mesh degraded.'
+  mode: queued
+  max: 5
