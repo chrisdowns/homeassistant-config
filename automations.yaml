@@ -731,14 +731,4 @@
   - action: vacuum.return_to_base
     target:
       entity_id: vacuum.master_s5_max
-  - action: notify.mobile_app_chriss_iphone
-    data:
-      title: 🤖 Master vacuum sent home
-      message: It started while the master TV was on — sent back to the dock.
-      data: {channel: Home Alerts, importance: default, priority: default, ttl: 0}
-  - action: notify.mobile_app_pixel_9_pro_xl
-    data:
-      title: 🤖 Master vacuum sent home
-      message: It started while the master TV was on — sent back to the dock.
-      data: {channel: Home Alerts, importance: default, priority: default, ttl: 0}
   mode: single
