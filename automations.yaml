@@ -709,7 +709,7 @@
     trigger: time
   conditions:
   - condition: template
-    value_template: "{{ state_attr('media_player.master_bedroom_tv','source') != 'TV' }}"
+    value_template: "{{ state_attr('media_player.master_bedroom_tv','source') != 'TV' and not is_state('media_player.master_master_samsung_tv','on') }}"
   actions:
   - action: vacuum.start
     target:
