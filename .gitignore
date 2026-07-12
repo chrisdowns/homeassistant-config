@@ -58,3 +58,7 @@ esphome/
 
 # HACS-managed frontend plugins (Lovelace) — reproducible via HACS, like custom_components/
 www/community/
+
+# Claude edit-backups (never track)
+*.bak-*
+*.bak
