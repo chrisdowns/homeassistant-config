@@ -715,3 +715,30 @@
     target:
       entity_id: vacuum.master_s5_max
   mode: single
+- id: master_vacuum_dock_if_tv_on
+  alias: Master vacuum — send home if it starts while master TV is on
+  description: Safety net for ANY start source (incl. a leftover Roborock cloud
+    schedule). If the master robot begins cleaning while the master TV is on
+    (Sonos soundbar source=TV OR native Samsung TV state=on), dock it and notify.
+  triggers:
+  - trigger: state
+    entity_id: vacuum.master_s5_max
+    to: cleaning
+  conditions:
+  - condition: template
+    value_template: "{{ state_attr('media_player.master_bedroom_tv','source') == 'TV' or is_state('media_player.master_master_samsung_tv','on') }}"
+  actions:
+  - action: vacuum.return_to_base
+    target:
+      entity_id: vacuum.master_s5_max
+  - action: notify.mobile_app_chriss_iphone
+    data:
+      title: 🤖 Master vacuum sent home
+      message: It started while the master TV was on — sent back to the dock.
+      data: {channel: Home Alerts, importance: default, priority: default, ttl: 0}
+  - action: notify.mobile_app_pixel_9_pro_xl
+    data:
+      title: 🤖 Master vacuum sent home
+      message: It started while the master TV was on — sent back to the dock.
+      data: {channel: Home Alerts, importance: default, priority: default, ttl: 0}
+  mode: single
