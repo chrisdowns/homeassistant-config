@@ -700,18 +700,3 @@
           message: '{{ trigger.to_state.name }} has been offline 15+ min — mesh degraded.'
   mode: queued
   max: 5
-- id: master_vacuum_skip_if_tv_on
-  alias: Master vacuum — daily 5pm run unless master TV is on
-  description: Starts the master Roborock (S5 Max) at 5pm CT only when the master
-    TV is off. TV-on is inferred from the master Sonos soundbar's source == 'TV'.
-  triggers:
-  - at: '17:00:00'
-    trigger: time
-  conditions:
-  - condition: template
-    value_template: "{{ state_attr('media_player.master_bedroom_tv','source') != 'TV' }}"
-  actions:
-  - action: vacuum.start
-    target:
-      entity_id: vacuum.master_s5_max
-  mode: single
