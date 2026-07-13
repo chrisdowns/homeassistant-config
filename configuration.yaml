@@ -41,3 +41,6 @@ timer:
   nightly_locking:
     name: Nightly locking in progress
     duration: "00:15:00"
+
+homeassistant:
+  packages: !include_dir_named packages
