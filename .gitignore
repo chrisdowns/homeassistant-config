@@ -62,3 +62,6 @@ www/community/
 # Claude edit-backups (never track)
 *.bak-*
 *.bak
+
+# rtl_433 add-on configs (contain broker credentials)
+rtl_433/

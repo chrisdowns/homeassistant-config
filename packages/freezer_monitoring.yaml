@@ -1,0 +1,224 @@
+# Freezer / Fridge Temperature Monitoring — HA package
+# ---------------------------------------------------------------------------
+# Deploy: copy to the Green at /config/packages/freezer_monitoring.yaml.
+# configuration.yaml already includes:
+#   homeassistant:
+#     packages: !include_dir_named packages
+#
+# Channel map (592TXR A/B/C switch — the STABLE id; device id rotates on battery
+# change, so we key on channel). Assigned by MEASURED temperature 2026-07-13
+# after Chris placed the two active sensors:
+#   B = Garage freezer        (id 2082  — read 28°F and plunging = freezer)
+#   A = Kitchen refrigerator  (id 13260 — cooling toward ~38°F = fridge)
+#   C = unused                (no physical sensor on channel C)
+#   (Garage fridge retired — its sensor moved to the kitchen.)
+#
+# rtl_433 add-on publishes per-channel JSON to rtl_433/devices/Acurite-Tower/<ch>
+# (keys: temperature_C, humidity, battery_ok, channel, model). Validated live.
+# expire_after (offline window) is per-channel so each sensor's timer is
+# independent; 10 min may be twitchy through walls — loosen only expire_after /
+# the offline automation if it false-alarms.
+# ---------------------------------------------------------------------------
+
+mqtt:
+  sensor:
+    # ==== Garage freezer : channel B ====
+    - name: "Garage Freezer Temperature"
+      unique_id: frzmon_garage_freezer_temp
+      state_topic: "rtl_433/devices/Acurite-Tower/B"
+      value_template: >-
+        {% if value_json.temperature_C is defined %}
+          {{ (value_json.temperature_C | float * 9 / 5 + 32) | round(1) }}
+        {% else %}{{ this.state | default('unknown', true) }}{% endif %}
+      unit_of_measurement: "°F"
+      device_class: temperature
+      state_class: measurement
+      expire_after: 600
+    - name: "Garage Freezer Humidity"
+      unique_id: frzmon_garage_freezer_humidity
+      state_topic: "rtl_433/devices/Acurite-Tower/B"
+      value_template: "{{ value_json.humidity | int }}"
+      unit_of_measurement: "%"
+      device_class: humidity
+      state_class: measurement
+      expire_after: 600
+
+    # ==== Kitchen refrigerator : channel A ====
+    - name: "Kitchen Fridge Temperature"
+      unique_id: frzmon_kitchen_fridge_temp
+      state_topic: "rtl_433/devices/Acurite-Tower/A"
+      value_template: >-
+        {% if value_json.temperature_C is defined %}
+          {{ (value_json.temperature_C | float * 9 / 5 + 32) | round(1) }}
+        {% else %}{{ this.state | default('unknown', true) }}{% endif %}
+      unit_of_measurement: "°F"
+      device_class: temperature
+      state_class: measurement
+      expire_after: 600
+    - name: "Kitchen Fridge Humidity"
+      unique_id: frzmon_kitchen_fridge_humidity
+      state_topic: "rtl_433/devices/Acurite-Tower/A"
+      value_template: "{{ value_json.humidity | int }}"
+      unit_of_measurement: "%"
+      device_class: humidity
+      state_class: measurement
+      expire_after: 600
+
+  binary_sensor:
+    - name: "Garage Freezer Sensor Battery"
+      unique_id: frzmon_garage_freezer_batt
+      state_topic: "rtl_433/devices/Acurite-Tower/B"
+      value_template: "{{ value_json.battery_ok | int }}"
+      payload_on: "0"        # battery_ok = 0 -> low (device_class battery: on = low)
+      payload_off: "1"
+      device_class: battery
+      expire_after: 600
+    - name: "Kitchen Fridge Sensor Battery"
+      unique_id: frzmon_kitchen_fridge_batt
+      state_topic: "rtl_433/devices/Acurite-Tower/A"
+      value_template: "{{ value_json.battery_ok | int }}"
+      payload_on: "0"
+      payload_off: "1"
+      device_class: battery
+      expire_after: 600
+
+automation:
+  # ===================== GARAGE FREEZER (channel B) =====================
+  - id: frzmon_garage_freezer_warm_warn
+    alias: "Freezer monitor — garage freezer warm (warn)"
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.garage_freezer_temperature
+        above: 10
+        for: { minutes: 10 }
+    action:
+      - action: notify.mobile_app_chriss_iphone
+        data:
+          title: "⚠️ Garage freezer warming"
+          message: "Garage freezer is {{ trigger.to_state.state }}°F (>10) for 10 min."
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: "⚠️ Garage freezer warming"
+          message: "Garage freezer is {{ trigger.to_state.state }}°F (>10) for 10 min."
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+
+  - id: frzmon_garage_freezer_warm_urgent
+    alias: "Freezer monitor — garage freezer warm (URGENT)"
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.garage_freezer_temperature
+        above: 20
+        for: { minutes: 10 }
+    action:
+      - action: notify.mobile_app_chriss_iphone
+        data:
+          title: "🚨 Garage freezer FAILING"
+          message: "Garage freezer is {{ trigger.to_state.state }}°F (>20) for 10 min — check it."
+          data:
+            channel: Critical Home Alerts
+            importance: high
+            priority: high
+            ttl: 0
+            push: { interruption-level: time-sensitive }
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: "🚨 Garage freezer FAILING"
+          message: "Garage freezer is {{ trigger.to_state.state }}°F (>20) for 10 min — check it."
+          data: { channel: Critical Home Alerts, importance: high, priority: high, ttl: 0 }
+
+  # ===================== KITCHEN REFRIGERATOR (channel A) =====================
+  - id: frzmon_kitchen_fridge_warm_warn
+    alias: "Freezer monitor — kitchen fridge warm (warn)"
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.kitchen_fridge_temperature
+        above: 40
+        for: { minutes: 10 }
+    action:
+      - action: notify.mobile_app_chriss_iphone
+        data:
+          title: "⚠️ Kitchen fridge warming"
+          message: "Kitchen fridge is {{ trigger.to_state.state }}°F (>40) for 10 min."
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: "⚠️ Kitchen fridge warming"
+          message: "Kitchen fridge is {{ trigger.to_state.state }}°F (>40) for 10 min."
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+
+  - id: frzmon_kitchen_fridge_warm_urgent
+    alias: "Freezer monitor — kitchen fridge warm (URGENT)"
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.kitchen_fridge_temperature
+        above: 45
+        for: { minutes: 10 }
+    action:
+      - action: notify.mobile_app_chriss_iphone
+        data:
+          title: "🚨 Kitchen fridge FAILING"
+          message: "Kitchen fridge is {{ trigger.to_state.state }}°F (>45) for 10 min — check it."
+          data:
+            channel: Critical Home Alerts
+            importance: high
+            priority: high
+            ttl: 0
+            push: { interruption-level: time-sensitive }
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: "🚨 Kitchen fridge FAILING"
+          message: "Kitchen fridge is {{ trigger.to_state.state }}°F (>45) for 10 min — check it."
+          data: { channel: Critical Home Alerts, importance: high, priority: high, ttl: 0 }
+
+  # ===================== OFFLINE (no reading ~10 min) =====================
+  - id: frzmon_sensor_offline
+    alias: "Freezer monitor — sensor offline"
+    trigger:
+      - platform: state
+        entity_id:
+          - sensor.garage_freezer_temperature
+          - sensor.kitchen_fridge_temperature
+        to: "unavailable"
+        for: { minutes: 1 }
+    action:
+      - action: notify.mobile_app_chriss_iphone
+        data:
+          title: "📡 Fridge/freezer sensor offline"
+          message: "{{ trigger.to_state.attributes.friendly_name | default(trigger.entity_id) }} — no reading for ~10 min (battery/range?)."
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: "📡 Fridge/freezer sensor offline"
+          message: "{{ trigger.to_state.attributes.friendly_name | default(trigger.entity_id) }} — no reading for ~10 min (battery/range?)."
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+
+  # ===================== LOW BATTERY =====================
+  - id: frzmon_sensor_low_battery
+    alias: "Freezer monitor — low battery"
+    trigger:
+      - platform: state
+        entity_id:
+          - binary_sensor.garage_freezer_sensor_battery
+          - binary_sensor.kitchen_fridge_sensor_battery
+        to: "on"
+        for: { minutes: 5 }
+    action:
+      - action: notify.mobile_app_chriss_iphone
+        data:
+          title: "🔋 Fridge/freezer sensor low battery"
+          message: "{{ trigger.to_state.attributes.friendly_name | default(trigger.entity_id) }} reports low battery — swap in lithium AAs."
+          data: { channel: Home Alerts, importance: default, priority: default, ttl: 0 }
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: "🔋 Fridge/freezer sensor low battery"
+          message: "{{ trigger.to_state.attributes.friendly_name | default(trigger.entity_id) }} reports low battery — swap in lithium AAs."
+          data: { channel: Home Alerts, importance: default, priority: default, ttl: 0 }
+
+# ---------------------------------------------------------------------------
+# Retired (sensor moved to kitchen): the former "Garage Fridge" entities
+# (channel B, frzmon_garage_fridge_*) were removed. They will show as
+# unavailable/restored in the entity registry until deleted from the HA UI
+# (Settings → Devices & Services → Entities → filter "garage fridge").
+# If a 3rd sensor is later placed on channel C, re-add a block here.
+# ---------------------------------------------------------------------------
