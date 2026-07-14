@@ -5,28 +5,38 @@
 #   homeassistant:
 #     packages: !include_dir_named packages
 #
-# Channel map (592TXR A/B/C switch — the STABLE id; device id rotates on battery
-# change, so we key on channel). Assigned by MEASURED temperature 2026-07-13
-# after Chris placed the two active sensors:
-#   B = Garage freezer        (id 2082  — read 28°F and plunging = freezer)
-#   A = Kitchen refrigerator  (id 13260 — cooling toward ~38°F = fridge)
-#   C = unused                (no physical sensor on channel C)
-#   (Garage fridge retired — its sensor moved to the kitchen.)
+# Sensor map (current 2026-07-14):
+#   Garage freezer  = 592TXR "Acurite-Tower" channel B (id 2082) — temp+humidity
+#   Kitchen fridge  = 606TX "Acurite-606TX" (id 126, always channel 1) — TEMP ONLY
+#   (Garage fridge retired — its sensor moved to the kitchen earlier.)
 #
-# Outdoor kitchen fridge — Acurite-606TX (id 126), added 2026-07-14. Different
-# model: temp-only (no humidity), no A/B/C switch. rtl_433 always tags it
-# channel 1, so it publishes to rtl_433/devices/Acurite-606TX/1. No collision
-# with the Tower channels above.
+# 592TXR Towers key on the A/B/C slide switch (STABLE; device id rotates on
+# battery change). 606TX has no switch — rtl_433 always tags it channel 1, so it
+# publishes to rtl_433/devices/Acurite-606TX/1. Topics never collide.
 #
-# rtl_433 add-on publishes per-device JSON to rtl_433/devices/<model>/<channel>
-# (Tower keys: temperature_C, humidity, battery_ok, channel; 606TX: no humidity).
-# Validated live. expire_after (offline window) is per-sensor so each timer is
-# independent; 10 min may be twitchy through walls — loosen only expire_after /
-# the offline automation if it false-alarms. (The outdoor fridge is the most
-# distant sensor, so it's the most likely to want a looser window.)
+# History note: channel A (592TXR id 13260, has humidity) WAS the kitchen fridge.
+# On 2026-07-14 it was swapped out for the 606 because the 606 couldn't reach the
+# receiver from the OUTDOOR kitchen fridge (metal box + distance blocks 433MHz —
+# even the stronger Tower went silent sealed inside). The 606 is solid at the
+# indoor kitchen fridge, so it lives there now. Tower channel A is PARKED
+# (unsubscribed) awaiting a humidity-useful home — TBD.
+#
+# Outdoor kitchen fridge: NO sensor until an AcuRite 00986 (rtl_433 "Acurite-986")
+# arrives — that model puts the transmitter/antenna OUTSIDE the box with a wired
+# probe INSIDE, which is the only thing that beats the enclosure. When it lands,
+# sniff its topic/id off MQTT and add an Acurite-986 block + warm/offline/battery
+# wiring. (Likely still wants receiver-side RF help — that spot was marginal even
+# open-air.)
+#
+# rtl_433 publishes per-device JSON to rtl_433/devices/<model>/<channel>. Tower
+# keys: temperature_C, humidity, battery_ok, channel; 606TX: no humidity.
+# expire_after (offline window) is per-sensor. Sniff live stream to debug:
+#   ssh ha-green → mosquitto_sub -h core-mosquitto -u rtl433 -P <pw> -t 'rtl_433/devices/#' -v
+#   (broker creds live in the mosquitto add-on options via the supervisor API)
 #
 # NOTE (2026-07-14): the SDR also hears an Acurite-609TXC (id 204) reporting a
-# LOW battery — unidentified/unplaced, intentionally NOT wired here yet.
+# LOW battery — a one-piece temp+humidity sensor (NOT a probe model),
+# unidentified/unplaced, intentionally NOT wired here yet.
 # ---------------------------------------------------------------------------
 
 mqtt:
@@ -52,30 +62,13 @@ mqtt:
       state_class: measurement
       expire_after: 600
 
-    # ==== Kitchen refrigerator : channel A ====
+    # ==== Kitchen refrigerator : Acurite-606TX id 126 (temp-only) ====
+    # Was the 592TXR on channel A; swapped to the 606 on 2026-07-14 (the 606
+    # can't reach from the outdoor fridge but is rock-solid here). This model
+    # has no humidity, so kitchen-fridge humidity was dropped. Tower/A is now
+    # parked (awaiting a humidity-useful home — TBD).
     - name: "Kitchen Fridge Temperature"
       unique_id: frzmon_kitchen_fridge_temp
-      state_topic: "rtl_433/devices/Acurite-Tower/A"
-      value_template: >-
-        {% if value_json.temperature_C is defined %}
-          {{ (value_json.temperature_C | float * 9 / 5 + 32) | round(1) }}
-        {% else %}{{ this.state | default('unknown', true) }}{% endif %}
-      unit_of_measurement: "°F"
-      device_class: temperature
-      state_class: measurement
-      expire_after: 600
-    - name: "Kitchen Fridge Humidity"
-      unique_id: frzmon_kitchen_fridge_humidity
-      state_topic: "rtl_433/devices/Acurite-Tower/A"
-      value_template: "{{ value_json.humidity | int }}"
-      unit_of_measurement: "%"
-      device_class: humidity
-      state_class: measurement
-      expire_after: 600
-
-    # ==== Outdoor kitchen fridge : Acurite-606TX id 126 (temp-only) ====
-    - name: "Outdoor Kitchen Fridge Temperature"
-      unique_id: frzmon_outdoor_kitchen_fridge_temp
       state_topic: "rtl_433/devices/Acurite-606TX/1"
       value_template: >-
         {% if value_json.temperature_C is defined %}
@@ -97,14 +90,6 @@ mqtt:
       expire_after: 600
     - name: "Kitchen Fridge Sensor Battery"
       unique_id: frzmon_kitchen_fridge_batt
-      state_topic: "rtl_433/devices/Acurite-Tower/A"
-      value_template: "{{ value_json.battery_ok | int }}"
-      payload_on: "0"
-      payload_off: "1"
-      device_class: battery
-      expire_after: 600
-    - name: "Outdoor Kitchen Fridge Sensor Battery"
-      unique_id: frzmon_outdoor_kitchen_fridge_batt
       state_topic: "rtl_433/devices/Acurite-606TX/1"
       value_template: "{{ value_json.battery_ok | int }}"
       payload_on: "0"
@@ -201,50 +186,6 @@ automation:
           message: "Kitchen fridge is {{ trigger.to_state.state }}°F (>45) for 10 min — check it."
           data: { channel: Critical Home Alerts, importance: high, priority: high, ttl: 0 }
 
-  # ===================== OUTDOOR KITCHEN FRIDGE (Acurite-606TX) =====================
-  - id: frzmon_outdoor_kitchen_fridge_warm_warn
-    alias: "Freezer monitor — outdoor kitchen fridge warm (warn)"
-    trigger:
-      - platform: numeric_state
-        entity_id: sensor.outdoor_kitchen_fridge_temperature
-        above: 40
-        for: { minutes: 10 }
-    action:
-      - action: notify.mobile_app_chriss_iphone
-        data:
-          title: "⚠️ Outdoor kitchen fridge warming"
-          message: "Outdoor kitchen fridge is {{ trigger.to_state.state }}°F (>40) for 10 min."
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-      - action: notify.mobile_app_pixel_9_pro_xl
-        data:
-          title: "⚠️ Outdoor kitchen fridge warming"
-          message: "Outdoor kitchen fridge is {{ trigger.to_state.state }}°F (>40) for 10 min."
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-
-  - id: frzmon_outdoor_kitchen_fridge_warm_urgent
-    alias: "Freezer monitor — outdoor kitchen fridge warm (URGENT)"
-    trigger:
-      - platform: numeric_state
-        entity_id: sensor.outdoor_kitchen_fridge_temperature
-        above: 45
-        for: { minutes: 10 }
-    action:
-      - action: notify.mobile_app_chriss_iphone
-        data:
-          title: "🚨 Outdoor kitchen fridge FAILING"
-          message: "Outdoor kitchen fridge is {{ trigger.to_state.state }}°F (>45) for 10 min — check it."
-          data:
-            channel: Critical Home Alerts
-            importance: high
-            priority: high
-            ttl: 0
-            push: { interruption-level: time-sensitive }
-      - action: notify.mobile_app_pixel_9_pro_xl
-        data:
-          title: "🚨 Outdoor kitchen fridge FAILING"
-          message: "Outdoor kitchen fridge is {{ trigger.to_state.state }}°F (>45) for 10 min — check it."
-          data: { channel: Critical Home Alerts, importance: high, priority: high, ttl: 0 }
-
   # ===================== OFFLINE (no reading ~10 min) =====================
   - id: frzmon_sensor_offline
     alias: "Freezer monitor — sensor offline"
@@ -253,7 +194,6 @@ automation:
         entity_id:
           - sensor.garage_freezer_temperature
           - sensor.kitchen_fridge_temperature
-          - sensor.outdoor_kitchen_fridge_temperature
         to: "unavailable"
         for: { minutes: 1 }
     action:
@@ -276,7 +216,6 @@ automation:
         entity_id:
           - binary_sensor.garage_freezer_sensor_battery
           - binary_sensor.kitchen_fridge_sensor_battery
-          - binary_sensor.outdoor_kitchen_fridge_sensor_battery
         to: "on"
         for: { minutes: 5 }
     action:
@@ -292,9 +231,11 @@ automation:
           data: { channel: Home Alerts, importance: default, priority: default, ttl: 0 }
 
 # ---------------------------------------------------------------------------
-# Retired (sensor moved to kitchen): the former "Garage Fridge" entities
-# (channel B, frzmon_garage_fridge_*) were removed. They will show as
-# unavailable/restored in the entity registry until deleted from the HA UI
-# (Settings → Devices & Services → Entities → filter "garage fridge").
-# If a 3rd sensor is later placed on channel C, re-add a block here.
+# Orphaned entities (removed from YAML, will linger as unavailable/restored in
+# the registry until deleted in the HA UI: Settings → Devices & Services →
+# Entities):
+#   - sensor.kitchen_fridge_humidity        (606 has no humidity)
+#   - sensor.outdoor_kitchen_fridge_temperature + ..._sensor_battery
+#     (606 became the kitchen sensor; outdoor waits on the 00986)
+#   - the former "Garage Fridge" entities (retired earlier)
 # ---------------------------------------------------------------------------
