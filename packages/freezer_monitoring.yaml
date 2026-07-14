@@ -13,11 +13,20 @@
 #   C = unused                (no physical sensor on channel C)
 #   (Garage fridge retired — its sensor moved to the kitchen.)
 #
-# rtl_433 add-on publishes per-channel JSON to rtl_433/devices/Acurite-Tower/<ch>
-# (keys: temperature_C, humidity, battery_ok, channel, model). Validated live.
-# expire_after (offline window) is per-channel so each sensor's timer is
+# Outdoor kitchen fridge — Acurite-606TX (id 126), added 2026-07-14. Different
+# model: temp-only (no humidity), no A/B/C switch. rtl_433 always tags it
+# channel 1, so it publishes to rtl_433/devices/Acurite-606TX/1. No collision
+# with the Tower channels above.
+#
+# rtl_433 add-on publishes per-device JSON to rtl_433/devices/<model>/<channel>
+# (Tower keys: temperature_C, humidity, battery_ok, channel; 606TX: no humidity).
+# Validated live. expire_after (offline window) is per-sensor so each timer is
 # independent; 10 min may be twitchy through walls — loosen only expire_after /
-# the offline automation if it false-alarms.
+# the offline automation if it false-alarms. (The outdoor fridge is the most
+# distant sensor, so it's the most likely to want a looser window.)
+#
+# NOTE (2026-07-14): the SDR also hears an Acurite-609TXC (id 204) reporting a
+# LOW battery — unidentified/unplaced, intentionally NOT wired here yet.
 # ---------------------------------------------------------------------------
 
 mqtt:
@@ -64,6 +73,19 @@ mqtt:
       state_class: measurement
       expire_after: 600
 
+    # ==== Outdoor kitchen fridge : Acurite-606TX id 126 (temp-only) ====
+    - name: "Outdoor Kitchen Fridge Temperature"
+      unique_id: frzmon_outdoor_kitchen_fridge_temp
+      state_topic: "rtl_433/devices/Acurite-606TX/1"
+      value_template: >-
+        {% if value_json.temperature_C is defined %}
+          {{ (value_json.temperature_C | float * 9 / 5 + 32) | round(1) }}
+        {% else %}{{ this.state | default('unknown', true) }}{% endif %}
+      unit_of_measurement: "°F"
+      device_class: temperature
+      state_class: measurement
+      expire_after: 600
+
   binary_sensor:
     - name: "Garage Freezer Sensor Battery"
       unique_id: frzmon_garage_freezer_batt
@@ -76,6 +98,14 @@ mqtt:
     - name: "Kitchen Fridge Sensor Battery"
       unique_id: frzmon_kitchen_fridge_batt
       state_topic: "rtl_433/devices/Acurite-Tower/A"
+      value_template: "{{ value_json.battery_ok | int }}"
+      payload_on: "0"
+      payload_off: "1"
+      device_class: battery
+      expire_after: 600
+    - name: "Outdoor Kitchen Fridge Sensor Battery"
+      unique_id: frzmon_outdoor_kitchen_fridge_batt
+      state_topic: "rtl_433/devices/Acurite-606TX/1"
       value_template: "{{ value_json.battery_ok | int }}"
       payload_on: "0"
       payload_off: "1"
@@ -171,6 +201,50 @@ automation:
           message: "Kitchen fridge is {{ trigger.to_state.state }}°F (>45) for 10 min — check it."
           data: { channel: Critical Home Alerts, importance: high, priority: high, ttl: 0 }
 
+  # ===================== OUTDOOR KITCHEN FRIDGE (Acurite-606TX) =====================
+  - id: frzmon_outdoor_kitchen_fridge_warm_warn
+    alias: "Freezer monitor — outdoor kitchen fridge warm (warn)"
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.outdoor_kitchen_fridge_temperature
+        above: 40
+        for: { minutes: 10 }
+    action:
+      - action: notify.mobile_app_chriss_iphone
+        data:
+          title: "⚠️ Outdoor kitchen fridge warming"
+          message: "Outdoor kitchen fridge is {{ trigger.to_state.state }}°F (>40) for 10 min."
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: "⚠️ Outdoor kitchen fridge warming"
+          message: "Outdoor kitchen fridge is {{ trigger.to_state.state }}°F (>40) for 10 min."
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+
+  - id: frzmon_outdoor_kitchen_fridge_warm_urgent
+    alias: "Freezer monitor — outdoor kitchen fridge warm (URGENT)"
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.outdoor_kitchen_fridge_temperature
+        above: 45
+        for: { minutes: 10 }
+    action:
+      - action: notify.mobile_app_chriss_iphone
+        data:
+          title: "🚨 Outdoor kitchen fridge FAILING"
+          message: "Outdoor kitchen fridge is {{ trigger.to_state.state }}°F (>45) for 10 min — check it."
+          data:
+            channel: Critical Home Alerts
+            importance: high
+            priority: high
+            ttl: 0
+            push: { interruption-level: time-sensitive }
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: "🚨 Outdoor kitchen fridge FAILING"
+          message: "Outdoor kitchen fridge is {{ trigger.to_state.state }}°F (>45) for 10 min — check it."
+          data: { channel: Critical Home Alerts, importance: high, priority: high, ttl: 0 }
+
   # ===================== OFFLINE (no reading ~10 min) =====================
   - id: frzmon_sensor_offline
     alias: "Freezer monitor — sensor offline"
@@ -179,6 +253,7 @@ automation:
         entity_id:
           - sensor.garage_freezer_temperature
           - sensor.kitchen_fridge_temperature
+          - sensor.outdoor_kitchen_fridge_temperature
         to: "unavailable"
         for: { minutes: 1 }
     action:
@@ -201,6 +276,7 @@ automation:
         entity_id:
           - binary_sensor.garage_freezer_sensor_battery
           - binary_sensor.kitchen_fridge_sensor_battery
+          - binary_sensor.outdoor_kitchen_fridge_sensor_battery
         to: "on"
         for: { minutes: 5 }
     action:
