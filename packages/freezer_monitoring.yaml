@@ -130,23 +130,46 @@ mqtt:
       expire_after: 600
 
 # ---------------------------------------------------------------------------
-# Rate-of-rise detector (door-ajar / slow-failure early warning, 2026-07-15).
-# The garage freezer holds a dead-flat ~-15F (24h: min -16.1, max -15.2,
-# stdev 0.21F — 0% of time above -15). With that quiet a baseline a sustained
-# upward slope is unambiguous LONG before any absolute threshold trips, so we
-# catch a cracked door while the box is still deeply frozen.
-#   min_gradient 0.001389 = 5F/hour (5 / 3600 s).  sample_duration 1800 = 30 min.
+# Rate-of-rise detectors (door-ajar / slow-failure early warning) — STANDARD on
+# every temp sensor. A sustained upward slope catches a cracked door or dying
+# unit while the box is still in-range, long before the absolute threshold.
+# min_gradient is in °F/second (F-per-hour / 3600). Two class presets:
+#
+#   FREEZER-CLASS  (baseline ~dead-flat, e.g. garage freezer stdev 0.21F):
+#       5 F/hr · 30-min window (1800s) · automation for:5min · min_samples 5
+#   FRIDGE-CLASS   (compressor cycle + frequent door-grabs, steady stdev ~0.7F):
+#       8 F/hr · 45-min window (2700s) · automation for:20min · min_samples 4
+#     -> the longer window + longer sustained `for` is what separates a real
+#        door-ajar from a self-reversing cycle; fridge numbers are conservative
+#        (protect against alert fatigue) and reviewable once each unit has a few
+#        undisturbed days of clean data.
+# Each *_rising binary_sensor pairs with an automation gated BELOW that unit's
+# warn line, so it never double-fires with the absolute warn.
 # ---------------------------------------------------------------------------
 binary_sensor:
   - platform: trend
     sensors:
-      garage_freezer_rising:
+      garage_freezer_rising:            # freezer-class: 5 F/hr over 30 min
         friendly_name: "Garage Freezer Rising"
         entity_id: sensor.garage_freezer_temperature
         sample_duration: 1800
         min_gradient: 0.001389
         min_samples: 5
         max_samples: 50
+      garage_fridge_rising:             # fridge-class: 8 F/hr over 45 min
+        friendly_name: "Garage Fridge Rising"
+        entity_id: sensor.garage_fridge_temperature
+        sample_duration: 2700
+        min_gradient: 0.002222
+        min_samples: 4
+        max_samples: 60
+      kitchen_fridge_rising:            # fridge-class: 8 F/hr over 45 min
+        friendly_name: "Kitchen Fridge Rising"
+        entity_id: sensor.kitchen_fridge_temperature
+        sample_duration: 2700
+        min_gradient: 0.002222
+        min_samples: 4
+        max_samples: 60
 
 automation:
   # ===================== GARAGE FREEZER (channel B) =====================
@@ -262,6 +285,30 @@ automation:
           message: "Garage fridge is {{ trigger.to_state.state }}°F (>45) for 10 min — check it."
           data: { channel: Critical Home Alerts, importance: high, priority: high, ttl: 0 }
 
+  - id: frzmon_garage_fridge_rising
+    alias: "Freezer monitor — garage fridge steadily warming (door ajar?)"
+    # Fridge-class: sustained ~8°F/hr rise while still below the 40°F warn line.
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.garage_fridge_rising
+        to: "on"
+        for: { minutes: 20 }
+    condition:
+      - condition: numeric_state
+        entity_id: sensor.garage_fridge_temperature
+        below: 40
+    action:
+      - action: notify.mobile_app_chriss_iphone
+        data:
+          title: "📈 Garage fridge steadily warming"
+          message: "Rising ~8°F/hr for 45+ min, now {{ states('sensor.garage_fridge_temperature') }}°F — door ajar or failing?"
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: "📈 Garage fridge steadily warming"
+          message: "Rising ~8°F/hr for 45+ min, now {{ states('sensor.garage_fridge_temperature') }}°F — door ajar or failing?"
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+
   # ===================== KITCHEN REFRIGERATOR (channel A) =====================
   - id: frzmon_kitchen_fridge_warm_warn
     alias: "Freezer monitor — kitchen fridge warm (warn)"
@@ -305,6 +352,30 @@ automation:
           title: "🚨 Kitchen fridge FAILING"
           message: "Kitchen fridge is {{ trigger.to_state.state }}°F (>45) for 10 min — check it."
           data: { channel: Critical Home Alerts, importance: high, priority: high, ttl: 0 }
+
+  - id: frzmon_kitchen_fridge_rising
+    alias: "Freezer monitor — kitchen fridge steadily warming (door ajar?)"
+    # Fridge-class: sustained ~8°F/hr rise while still below the 40°F warn line.
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.kitchen_fridge_rising
+        to: "on"
+        for: { minutes: 20 }
+    condition:
+      - condition: numeric_state
+        entity_id: sensor.kitchen_fridge_temperature
+        below: 40
+    action:
+      - action: notify.mobile_app_chriss_iphone
+        data:
+          title: "📈 Kitchen fridge steadily warming"
+          message: "Rising ~8°F/hr for 45+ min, now {{ states('sensor.kitchen_fridge_temperature') }}°F — door ajar or failing?"
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: "📈 Kitchen fridge steadily warming"
+          message: "Rising ~8°F/hr for 45+ min, now {{ states('sensor.kitchen_fridge_temperature') }}°F — door ajar or failing?"
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
 
   # ===================== OFFLINE (no reading ~10 min) =====================
   - id: frzmon_sensor_offline
