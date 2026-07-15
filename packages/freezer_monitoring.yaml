@@ -5,10 +5,13 @@
 #   homeassistant:
 #     packages: !include_dir_named packages
 #
-# Sensor map (current 2026-07-14):
-#   Garage freezer  = 592TXR "Acurite-Tower" channel B (id 2082) — temp+humidity
-#   Garage fridge   = 592TXR "Acurite-Tower" channel A (id 13260) — temp+humidity
-#   Kitchen fridge  = 606TX "Acurite-606TX" (id 126, always channel 1) — TEMP ONLY
+# Sensor map (current 2026-07-15):
+#   Garage freezer       = 592TXR "Acurite-Tower" ch B (id 2082) — temp+humidity
+#   Garage fridge        = 592TXR "Acurite-Tower" ch A (id 13260) — temp+humidity
+#   Kitchen fridge       = 606TX "Acurite-606TX" (id 126) — TEMP ONLY
+#   Garage fridge-freezer= 606TX "Acurite-606TX" (id 174) — TEMP ONLY
+#   The two 606s SHARE topic Acurite-606TX/1 (no channel switch) — split by `id`
+#   in each value_template (see the 606 section below).
 #
 # 592TXR Towers key on the A/B/C slide switch (STABLE; device id rotates on
 # battery change). 606TX has no switch — rtl_433 always tags it channel 1, so it
@@ -86,16 +89,38 @@ mqtt:
       state_class: measurement
       expire_after: 600
 
-    # ==== Kitchen refrigerator : Acurite-606TX id 126 (temp-only) ====
-    # Was the 592TXR on channel A; swapped to the 606 on 2026-07-14 (the 606
-    # can't reach from the outdoor fridge but is rock-solid here). This model
-    # has no humidity, so kitchen-fridge humidity was dropped. Tower/A is now
-    # parked (awaiting a humidity-useful home — TBD).
+    # ==== Two Acurite-606TX share ONE topic — filter by `id` (temp-only) ====
+    # The 606TX has NO channel switch, so rtl_433 tags EVERY 606 as channel 1 →
+    # both publish to rtl_433/devices/Acurite-606TX/1. They're told apart ONLY by
+    # the `id` field in the payload, so each sensor's value_template must gate on
+    # its id and return `this.state` for the other unit's messages (else the two
+    # readings clobber each other). 606 ids are stable (unlike the Towers, whose
+    # ids rotate on battery swap — that's why Towers key on the A/B/C channel).
+    #   id 126 = Kitchen fridge (indoor, ~33°F). id 174 = Garage Fridge-Freezer
+    #   (the combo garage fridge's FREEZER compartment; distinct from the
+    #   standalone chest "Garage Freezer" on Tower/B).
+    # Caveat: expire_after resets on ANY 606 message on the shared topic, so
+    # per-unit OFFLINE detection is weak — a single 606 dying isn't flagged offline
+    # while the other still transmits (low-battery alert still covers battery death;
+    # total SDR/reception loss still trips offline for both).
     - name: "Kitchen Fridge Temperature"
       unique_id: frzmon_kitchen_fridge_temp
       state_topic: "rtl_433/devices/Acurite-606TX/1"
       value_template: >-
-        {% if value_json.temperature_C is defined %}
+        {% if value_json.id == 126 and value_json.temperature_C is defined %}
+          {{ (value_json.temperature_C | float * 9 / 5 + 32) | round(1) }}
+        {% else %}{{ this.state | default('unknown', true) }}{% endif %}
+      unit_of_measurement: "°F"
+      device_class: temperature
+      state_class: measurement
+      expire_after: 600
+
+    # ==== Garage Fridge-Freezer : Acurite-606TX id 174 (temp-only) ====
+    - name: "Garage Fridge-Freezer Temperature"
+      unique_id: frzmon_garage_fridge_freezer_temp
+      state_topic: "rtl_433/devices/Acurite-606TX/1"
+      value_template: >-
+        {% if value_json.id == 174 and value_json.temperature_C is defined %}
           {{ (value_json.temperature_C | float * 9 / 5 + 32) | round(1) }}
         {% else %}{{ this.state | default('unknown', true) }}{% endif %}
       unit_of_measurement: "°F"
@@ -120,10 +145,24 @@ mqtt:
       payload_off: "1"
       device_class: battery
       expire_after: 600
+    # Two 606s share this topic — gate on id, hold prior state otherwise
+    # (this.state is "on"/"off" post-mapping → re-emit as "0"/"1").
     - name: "Kitchen Fridge Sensor Battery"
       unique_id: frzmon_kitchen_fridge_batt
       state_topic: "rtl_433/devices/Acurite-606TX/1"
-      value_template: "{{ value_json.battery_ok | int }}"
+      value_template: >-
+        {% if value_json.id == 126 %}{{ value_json.battery_ok | int }}
+        {% else %}{{ '0' if this.state == 'on' else '1' }}{% endif %}
+      payload_on: "0"
+      payload_off: "1"
+      device_class: battery
+      expire_after: 600
+    - name: "Garage Fridge-Freezer Sensor Battery"
+      unique_id: frzmon_garage_fridge_freezer_batt
+      state_topic: "rtl_433/devices/Acurite-606TX/1"
+      value_template: >-
+        {% if value_json.id == 174 %}{{ value_json.battery_ok | int }}
+        {% else %}{{ '0' if this.state == 'on' else '1' }}{% endif %}
       payload_on: "0"
       payload_off: "1"
       device_class: battery
@@ -386,6 +425,7 @@ automation:
           - sensor.garage_freezer_temperature
           - sensor.garage_fridge_temperature
           - sensor.kitchen_fridge_temperature
+          - sensor.garage_fridge_freezer_temperature
         to: "unavailable"
         for: { minutes: 1 }
     action:
@@ -409,6 +449,7 @@ automation:
           - binary_sensor.garage_freezer_sensor_battery
           - binary_sensor.garage_fridge_sensor_battery
           - binary_sensor.kitchen_fridge_sensor_battery
+          - binary_sensor.garage_fridge_freezer_sensor_battery
         to: "on"
         for: { minutes: 5 }
     action:
