@@ -129,10 +129,48 @@ mqtt:
       device_class: battery
       expire_after: 600
 
+# ---------------------------------------------------------------------------
+# Rate-of-rise detector (door-ajar / slow-failure early warning, 2026-07-15).
+# The garage freezer holds a dead-flat ~-15F (24h: min -16.1, max -15.2,
+# stdev 0.21F — 0% of time above -15). With that quiet a baseline a sustained
+# upward slope is unambiguous LONG before any absolute threshold trips, so we
+# catch a cracked door while the box is still deeply frozen.
+#   min_gradient 0.001389 = 5F/hour (5 / 3600 s).  sample_duration 1800 = 30 min.
+# ---------------------------------------------------------------------------
+binary_sensor:
+  - platform: trend
+    sensors:
+      garage_freezer_rising:
+        friendly_name: "Garage Freezer Rising"
+        entity_id: sensor.garage_freezer_temperature
+        sample_duration: 1800
+        min_gradient: 0.001389
+        min_samples: 5
+        max_samples: 50
+
 automation:
   # ===================== GARAGE FREEZER (channel B) =====================
   - id: frzmon_garage_freezer_warm_warn
     alias: "Freezer monitor — garage freezer warm (warn)"
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.garage_freezer_temperature
+        above: -5
+        for: { minutes: 20 }
+    action:
+      - action: notify.mobile_app_chriss_iphone
+        data:
+          title: "⚠️ Garage freezer warming"
+          message: "Garage freezer is {{ trigger.to_state.state }}°F (>-5) for 20 min."
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: "⚠️ Garage freezer warming"
+          message: "Garage freezer is {{ trigger.to_state.state }}°F (>-5) for 20 min."
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+
+  - id: frzmon_garage_freezer_warm_urgent
+    alias: "Freezer monitor — garage freezer warm (URGENT)"
     trigger:
       - platform: numeric_state
         entity_id: sensor.garage_freezer_temperature
@@ -141,27 +179,8 @@ automation:
     action:
       - action: notify.mobile_app_chriss_iphone
         data:
-          title: "⚠️ Garage freezer warming"
-          message: "Garage freezer is {{ trigger.to_state.state }}°F (>10) for 10 min."
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-      - action: notify.mobile_app_pixel_9_pro_xl
-        data:
-          title: "⚠️ Garage freezer warming"
-          message: "Garage freezer is {{ trigger.to_state.state }}°F (>10) for 10 min."
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-
-  - id: frzmon_garage_freezer_warm_urgent
-    alias: "Freezer monitor — garage freezer warm (URGENT)"
-    trigger:
-      - platform: numeric_state
-        entity_id: sensor.garage_freezer_temperature
-        above: 20
-        for: { minutes: 10 }
-    action:
-      - action: notify.mobile_app_chriss_iphone
-        data:
           title: "🚨 Garage freezer FAILING"
-          message: "Garage freezer is {{ trigger.to_state.state }}°F (>20) for 10 min — check it."
+          message: "Garage freezer is {{ trigger.to_state.state }}°F (>10) for 10 min — check it."
           data:
             channel: Critical Home Alerts
             importance: high
@@ -171,8 +190,33 @@ automation:
       - action: notify.mobile_app_pixel_9_pro_xl
         data:
           title: "🚨 Garage freezer FAILING"
-          message: "Garage freezer is {{ trigger.to_state.state }}°F (>20) for 10 min — check it."
+          message: "Garage freezer is {{ trigger.to_state.state }}°F (>10) for 10 min — check it."
           data: { channel: Critical Home Alerts, importance: high, priority: high, ttl: 0 }
+
+  - id: frzmon_garage_freezer_rising
+    alias: "Freezer monitor — garage freezer steadily warming (door ajar?)"
+    # Fires on a sustained ~5°F/hr rise (trend binary_sensor) while the box is
+    # still below the -5°F warn line — early door-ajar / slow-failure catch.
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.garage_freezer_rising
+        to: "on"
+        for: { minutes: 5 }
+    condition:
+      - condition: numeric_state
+        entity_id: sensor.garage_freezer_temperature
+        below: -5
+    action:
+      - action: notify.mobile_app_chriss_iphone
+        data:
+          title: "📈 Garage freezer steadily warming"
+          message: "Rising ~5°F/hr for 30+ min, now {{ states('sensor.garage_freezer_temperature') }}°F — door ajar or failing?"
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: "📈 Garage freezer steadily warming"
+          message: "Rising ~5°F/hr for 30+ min, now {{ states('sensor.garage_freezer_temperature') }}°F — door ajar or failing?"
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
 
   # ===================== GARAGE REFRIGERATOR (channel A) =====================
   - id: frzmon_garage_fridge_warm_warn
