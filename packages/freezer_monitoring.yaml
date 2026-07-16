@@ -209,6 +209,13 @@ binary_sensor:
         min_gradient: 0.002222
         min_samples: 4
         max_samples: 60
+      garage_fridge_freezer_rising:     # fridge-class: 8 F/hr over 45 min (settled stdev 1.15)
+        friendly_name: "Garage Fridge-Freezer Rising"
+        entity_id: sensor.garage_fridge_freezer_temperature
+        sample_duration: 2700
+        min_gradient: 0.002222
+        min_samples: 4
+        max_samples: 60
 
 automation:
   # ===================== GARAGE FREEZER (channel B) =====================
@@ -414,6 +421,77 @@ automation:
         data:
           title: "📈 Kitchen fridge steadily warming"
           message: "Rising ~8°F/hr for 45+ min, now {{ states('sensor.kitchen_fridge_temperature') }}°F — door ajar or failing?"
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+
+  # ============= GARAGE FRIDGE-FREEZER (606 id 174, combo compartment) =============
+  # Settled band 2026-07-16 (recent 6h): min -0.6 / max 3.6 / mean 1.4°F, stdev 1.15.
+  # warn 10°F is 6.4°F above the observed peak (0% of settled samples exceed it);
+  # urgent 15°F is the food-safety escalation. Fridge-class rising detector by stdev.
+  - id: frzmon_garage_fridge_freezer_warm_warn
+    alias: "Freezer monitor — garage fridge-freezer warm (warn)"
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.garage_fridge_freezer_temperature
+        above: 10
+        for: { minutes: 20 }
+    action:
+      - action: notify.mobile_app_chriss_iphone
+        data:
+          title: "⚠️ Garage fridge-freezer warming"
+          message: "Garage fridge-freezer is {{ trigger.to_state.state }}°F (>10) for 20 min."
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: "⚠️ Garage fridge-freezer warming"
+          message: "Garage fridge-freezer is {{ trigger.to_state.state }}°F (>10) for 20 min."
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+
+  - id: frzmon_garage_fridge_freezer_warm_urgent
+    alias: "Freezer monitor — garage fridge-freezer warm (URGENT)"
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.garage_fridge_freezer_temperature
+        above: 15
+        for: { minutes: 10 }
+    action:
+      - action: notify.mobile_app_chriss_iphone
+        data:
+          title: "🚨 Garage fridge-freezer FAILING"
+          message: "Garage fridge-freezer is {{ trigger.to_state.state }}°F (>15) for 10 min — check it."
+          data:
+            channel: Critical Home Alerts
+            importance: high
+            priority: high
+            ttl: 0
+            push: { interruption-level: time-sensitive }
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: "🚨 Garage fridge-freezer FAILING"
+          message: "Garage fridge-freezer is {{ trigger.to_state.state }}°F (>15) for 10 min — check it."
+          data: { channel: Critical Home Alerts, importance: high, priority: high, ttl: 0 }
+
+  - id: frzmon_garage_fridge_freezer_rising
+    alias: "Freezer monitor — garage fridge-freezer steadily warming (door ajar?)"
+    # Fridge-class: sustained ~8°F/hr rise while still below the 10°F warn line.
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.garage_fridge_freezer_rising
+        to: "on"
+        for: { minutes: 20 }
+    condition:
+      - condition: numeric_state
+        entity_id: sensor.garage_fridge_freezer_temperature
+        below: 10
+    action:
+      - action: notify.mobile_app_chriss_iphone
+        data:
+          title: "📈 Garage fridge-freezer steadily warming"
+          message: "Rising ~8°F/hr for 45+ min, now {{ states('sensor.garage_fridge_freezer_temperature') }}°F — door ajar or failing?"
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: "📈 Garage fridge-freezer steadily warming"
+          message: "Rising ~8°F/hr for 45+ min, now {{ states('sensor.garage_fridge_freezer_temperature') }}°F — door ajar or failing?"
           data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
 
   # ===================== OFFLINE (no reading ~10 min) =====================
