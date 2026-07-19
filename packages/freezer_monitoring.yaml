@@ -5,13 +5,15 @@
 #   homeassistant:
 #     packages: !include_dir_named packages
 #
-# Sensor map (current 2026-07-15):
+# Sensor map (current 2026-07-18):
 #   Garage freezer       = 592TXR "Acurite-Tower" ch B (id 2082) — temp+humidity
 #   Garage fridge        = 592TXR "Acurite-Tower" ch A (id 13260) — temp+humidity
 #   Kitchen fridge       = 606TX "Acurite-606TX" (id 126) — TEMP ONLY
 #   Garage fridge-freezer= 606TX "Acurite-606TX" (id 174) — TEMP ONLY
 #   The two 606s SHARE topic Acurite-606TX/1 (no channel switch) — split by `id`
 #   in each value_template (see the 606 section below).
+#   Outdoor kitchen fridge= Acurite-00276rm monitor (id 5978) + 06011RM PROBE —
+#     probe temp in temperature_1_C (inside the box), body/ambient in temperature_C.
 #
 # 592TXR Towers key on the A/B/C slide switch (STABLE; device id rotates on
 # battery change). 606TX has no switch — rtl_433 always tags it channel 1, so it
@@ -24,15 +26,15 @@
 # 433MHz, even the stronger Tower went silent sealed inside), but it's rock-solid
 # at the indoor kitchen fridge.
 #
-# Outdoor kitchen fridge: NO sensor until an AcuRite 00275RM/00276RM monitor +
-# 06011RM plug-in probe arrives (rtl_433 "Acurite-00275rm"; the PROBE temp comes
-# out in field temperature_1_C, onboard temp in temperature_C). That combo keeps
-# the transmitter OUTSIDE the box with the probe on a lead INSIDE — the only
-# architecture that beats the metal enclosure. (The 986 was a WRONG call — its
-# pucks mount inside the box → same Faraday-cage failure as the 606.) When it
-# lands, sniff its topic/id off MQTT and add an Acurite-00275rm block reading
-# temperature_1_C + warm/offline/battery wiring. (Likely still wants receiver-side
-# RF help — that spot was marginal even open-air.)
+# Outdoor kitchen fridge: WIRED 2026-07-18 — AcuRite 00276rm monitor + 06011RM
+# plug-in probe. rtl_433 decodes it as "Acurite-00276rm" (the earlier "00275rm"
+# guess was wrong — verified off the live stream). PROBE temp = temperature_1_C
+# (probe on a lead INSIDE the box), body/ambient = temperature_C. This keeps the
+# transmitter OUTSIDE the metal box — the only architecture that beats the
+# Faraday cage. (The 986 was a WRONG call — its pucks mount inside → same failure
+# as the 606.) That spot was marginal even open-air, so it likely still wants
+# receiver-side RF help; expire_after is set generous (900s) pending observed
+# reception density at the real location.
 #
 # rtl_433 publishes per-device JSON to rtl_433/devices/<model>/<channel>. Tower
 # keys: temperature_C, humidity, battery_ok, channel; 606TX: no humidity.
@@ -128,6 +130,45 @@ mqtt:
       state_class: measurement
       expire_after: 600
 
+    # ==== Outdoor kitchen fridge : Acurite-00276rm (id 5978) + 06011RM probe ====
+    # rtl_433 decodes this monitor as model "Acurite-00276rm" (NOT 00275rm as the
+    # earlier plan guessed — verified off the live MQTT stream 2026-07-18). The
+    # transmitter body stays OUTSIDE the metal fridge; the plug-in PROBE on a lead
+    # runs through the gasket into the cold space and its reading comes out in
+    # `temperature_1_C` (the onboard body sensor is `temperature_C` = ambient).
+    # Unique model topic → no channel switch and no topic-sharing sibling, so a
+    # simple field-presence guard is enough. Deliberately NOT gated on id:5978 —
+    # unlike the stable-id 606s (which SHARE a topic and MUST be split by id), this
+    # model has its own topic, and whether its id survives a battery swap is unknown;
+    # gating on an id that might rotate would silently kill the sensor after a swap.
+    # expire_after 900 is PROVISIONAL — this spot is a known marginal 433 link, so
+    # widen it if offline false-flaps, tighten toward 600 if reception proves solid.
+    - name: "Outdoor Kitchen Fridge Temperature"
+      unique_id: frzmon_outdoor_kitchen_fridge_temp   # reserved slot → binds sensor.outdoor_kitchen_fridge_temperature
+      state_topic: "rtl_433/devices/Acurite-00276rm"
+      value_template: >-
+        {% if value_json.temperature_1_C is defined %}
+          {{ (value_json.temperature_1_C | float * 9 / 5 + 32) | round(1) }}
+        {% else %}{{ this.state | default('unknown', true) }}{% endif %}
+      unit_of_measurement: "°F"
+      device_class: temperature
+      state_class: measurement
+      expire_after: 900
+    # Onboard body sensor = outdoor AMBIENT. Useful context for an outdoor unit:
+    # tells a hot-day rise apart from an actual fridge failure. (Not in a reserved
+    # slot — new entity sensor.outdoor_kitchen_fridge_ambient.)
+    - name: "Outdoor Kitchen Fridge Ambient"
+      unique_id: frzmon_outdoor_kitchen_fridge_ambient
+      state_topic: "rtl_433/devices/Acurite-00276rm"
+      value_template: >-
+        {% if value_json.temperature_C is defined %}
+          {{ (value_json.temperature_C | float * 9 / 5 + 32) | round(1) }}
+        {% else %}{{ this.state | default('unknown', true) }}{% endif %}
+      unit_of_measurement: "°F"
+      device_class: temperature
+      state_class: measurement
+      expire_after: 900
+
   binary_sensor:
     - name: "Garage Freezer Sensor Battery"
       unique_id: frzmon_garage_freezer_batt
@@ -167,6 +208,15 @@ mqtt:
       payload_off: "1"
       device_class: battery
       expire_after: 600
+    # Outdoor kitchen fridge monitor (Acurite-00276rm) — own topic, simple guard.
+    - name: "Outdoor Kitchen Fridge Sensor Battery"
+      unique_id: frzmon_outdoor_kitchen_fridge_batt   # reserved slot → binds binary_sensor.outdoor_kitchen_fridge_sensor_battery
+      state_topic: "rtl_433/devices/Acurite-00276rm"
+      value_template: "{{ value_json.battery_ok | int }}"
+      payload_on: "0"        # battery_ok = 0 -> low
+      payload_off: "1"
+      device_class: battery
+      expire_after: 900
 
 # ---------------------------------------------------------------------------
 # Rate-of-rise detectors (door-ajar / slow-failure early warning) — STANDARD on
@@ -212,6 +262,16 @@ binary_sensor:
       garage_fridge_freezer_rising:     # fridge-class: 8 F/hr over 45 min (settled stdev 1.15)
         friendly_name: "Garage Fridge-Freezer Rising"
         entity_id: sensor.garage_fridge_freezer_temperature
+        sample_duration: 2700
+        min_gradient: 0.002222
+        min_samples: 4
+        max_samples: 60
+      outdoor_kitchen_fridge_rising:    # fridge-class: 8 F/hr over 45 min (probe is inside the box, so outdoor ambient swings don't reach it)
+        # WATCH: needs >=4 samples in the 45-min window; if the marginal link
+        # delivers points too sparsely this may never populate — reassess once we
+        # see real reception density. Re-tune off a settled baseline after a few days.
+        friendly_name: "Outdoor Kitchen Fridge Rising"
+        entity_id: sensor.outdoor_kitchen_fridge_temperature
         sample_duration: 2700
         min_gradient: 0.002222
         min_samples: 4
@@ -494,6 +554,85 @@ automation:
           message: "Rising ~8°F/hr for 45+ min, now {{ states('sensor.garage_fridge_freezer_temperature') }}°F — door ajar or failing?"
           data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
 
+  # ===================== OUTDOOR KITCHEN FRIDGE (Acurite-00276rm probe) =====================
+  # Standard fridge food-safety thresholds (warn >40 / urgent >45), same as the
+  # kitchen & garage fridges — these are not baseline-derived, they're the
+  # food-safety line, so they hold regardless of this unit's settled band.
+  # NOTE: all three ship initial_state:false (loaded DISABLED). During pulldown
+  # from ~74°F ambient the probe sits above the 40°F warn line, which would trip a
+  # false warn+FAILING pair (the documented cooldown gotcha). ARM them only once
+  # the probe is holding below 40°F for 2+ reads:  automation.turn_on on
+  #   frzmon_outdoor_kitchen_fridge_warm_warn / _warm_urgent / _rising.
+  - id: frzmon_outdoor_kitchen_fridge_warm_warn
+    alias: "Freezer monitor — outdoor kitchen fridge warm (warn)"
+    initial_state: false
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.outdoor_kitchen_fridge_temperature
+        above: 40
+        for: { minutes: 10 }
+    action:
+      - action: notify.mobile_app_chriss_iphone
+        data:
+          title: "⚠️ Outdoor kitchen fridge warming"
+          message: "Outdoor kitchen fridge is {{ trigger.to_state.state }}°F (>40) for 10 min."
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: "⚠️ Outdoor kitchen fridge warming"
+          message: "Outdoor kitchen fridge is {{ trigger.to_state.state }}°F (>40) for 10 min."
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+
+  - id: frzmon_outdoor_kitchen_fridge_warm_urgent
+    alias: "Freezer monitor — outdoor kitchen fridge warm (URGENT)"
+    initial_state: false
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.outdoor_kitchen_fridge_temperature
+        above: 45
+        for: { minutes: 10 }
+    action:
+      - action: notify.mobile_app_chriss_iphone
+        data:
+          title: "🚨 Outdoor kitchen fridge FAILING"
+          message: "Outdoor kitchen fridge is {{ trigger.to_state.state }}°F (>45) for 10 min — check it."
+          data:
+            channel: Critical Home Alerts
+            importance: high
+            priority: high
+            ttl: 0
+            push: { interruption-level: time-sensitive }
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: "🚨 Outdoor kitchen fridge FAILING"
+          message: "Outdoor kitchen fridge is {{ trigger.to_state.state }}°F (>45) for 10 min — check it."
+          data: { channel: Critical Home Alerts, importance: high, priority: high, ttl: 0 }
+
+  - id: frzmon_outdoor_kitchen_fridge_rising
+    alias: "Freezer monitor — outdoor kitchen fridge steadily warming (door ajar?)"
+    initial_state: false
+    # Fridge-class: sustained ~8°F/hr rise while still below the 40°F warn line.
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.outdoor_kitchen_fridge_rising
+        to: "on"
+        for: { minutes: 20 }
+    condition:
+      - condition: numeric_state
+        entity_id: sensor.outdoor_kitchen_fridge_temperature
+        below: 40
+    action:
+      - action: notify.mobile_app_chriss_iphone
+        data:
+          title: "📈 Outdoor kitchen fridge steadily warming"
+          message: "Rising ~8°F/hr for 45+ min, now {{ states('sensor.outdoor_kitchen_fridge_temperature') }}°F — door ajar or failing?"
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: "📈 Outdoor kitchen fridge steadily warming"
+          message: "Rising ~8°F/hr for 45+ min, now {{ states('sensor.outdoor_kitchen_fridge_temperature') }}°F — door ajar or failing?"
+          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+
   # ===================== OFFLINE (no reading ~10 min) =====================
   - id: frzmon_sensor_offline
     alias: "Freezer monitor — sensor offline"
@@ -504,6 +643,7 @@ automation:
           - sensor.garage_fridge_temperature
           - sensor.kitchen_fridge_temperature
           - sensor.garage_fridge_freezer_temperature
+          - sensor.outdoor_kitchen_fridge_temperature
         to: "unavailable"
         for: { minutes: 1 }
     action:
@@ -528,6 +668,7 @@ automation:
           - binary_sensor.garage_fridge_sensor_battery
           - binary_sensor.kitchen_fridge_sensor_battery
           - binary_sensor.garage_fridge_freezer_sensor_battery
+          - binary_sensor.outdoor_kitchen_fridge_sensor_battery
         to: "on"
         for: { minutes: 5 }
     action:
@@ -547,6 +688,6 @@ automation:
 # the registry until deleted in the HA UI: Settings → Devices & Services →
 # Entities):
 #   - sensor.kitchen_fridge_humidity        (606 has no humidity)
-#   - sensor.outdoor_kitchen_fridge_temperature + ..._sensor_battery
-#     (606 became the kitchen sensor; outdoor waits on the 00275RM+06011RM probe)
+# (The outdoor_kitchen_fridge_* reserved slots are now BOUND to the 00276rm block
+#  above via their frzmon_outdoor_kitchen_fridge_* unique_ids — no longer orphaned.)
 # ---------------------------------------------------------------------------
