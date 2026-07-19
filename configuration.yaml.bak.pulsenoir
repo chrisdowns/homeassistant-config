@@ -44,13 +44,3 @@ timer:
 
 homeassistant:
   packages: !include_dir_named packages
-
-# Home Guardian — Pulse Noir dashboard (custom sensor panel: leak / GFCI / temperature)
-panel_custom:
-  - name: guardian-dashboard
-    sidebar_title: Guardian
-    sidebar_icon: mdi:shield-home
-    url_path: guardian
-    module_url: /local/pulse-noir-dashboard.js
-    embed_iframe: false
-    require_admin: false
