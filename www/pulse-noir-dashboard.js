@@ -153,7 +153,8 @@
         value: online ? 'Powered' : 'No power (check GFCI)',
         battery: null, warnings: warnings, status: status,
         lastCT: lr ? fmtCT(lr) : '', ago: lr ? relAgo(lr, now) : '',
-        device: (s && s.attributes && s.attributes.manufacturer) || 'Outlet monitor'
+        device: (s && s.attributes && s.attributes.manufacturer) || 'Outlet monitor',
+        entityId: id, domain: id.split('.')[0], switchOn: state === 'on'
       };
     });
 
@@ -169,6 +170,7 @@
       var state = s.state;
       var online = state !== 'unavailable' && state !== 'unknown';
       var meta = tempMeta(id, nm);
+      if (meta.grp !== 'Cold chain') return; // temp tab shows only fridge/freezer (433) sensors
       var warnings = [], status = 'ok', value = '—';
       if (online) {
         var v = toNum(state);
@@ -278,16 +280,38 @@
     return wrap;
   }
 
-  function buildCard(sensor) {
+  function buildToggle(sensor, onToggle) {
+    var on = !!sensor.switchOn, reachable = sensor.online;
+    var btn = el('button', 'pln-toggle' + (on ? ' is-on' : '') + (reachable ? '' : ' is-disabled'));
+    btn.type = 'button'; btn.setAttribute('role', 'switch');
+    btn.setAttribute('aria-checked', on ? 'true' : 'false');
+    btn.setAttribute('aria-label', 'Power ' + sensor.name);
+    if (!reachable) { btn.disabled = true; btn.title = 'No power — GFCI may be tripped'; }
+    btn.appendChild(el('span', 'pln-toggle-knob'));
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (!reachable) return;
+      var now = !btn.classList.contains('is-on');
+      btn.classList.toggle('is-on', now);              // optimistic
+      btn.setAttribute('aria-checked', now ? 'true' : 'false');
+      onToggle(sensor.entityId, sensor.domain);
+    });
+    return btn;
+  }
+
+  function buildCard(sensor, famKey, onToggle) {
     var h = health(sensor), offline = !sensor.online;
     var card = el('article', 'pln-card pln-card-' + h);
     card.setAttribute('tabindex', '0');
     var statusLabel = offline ? 'OFFLINE' : h === 'critical' ? 'CRITICAL' : h === 'warn' ? 'WATCH' : 'OK';
     card.setAttribute('aria-label', sensor.name + ', ' + statusLabel + ', ' + sensor.value + ', ' + sensor.ago);
+    var top = el('div', 'pln-cardtop');
     var flag = el('span', 'pln-flag pln-flag-' + h);
     var flagIc = el('span', 'pln-flag-ic'); flagIc.innerHTML = offline ? icon('offline') : (h === 'ok' ? icon('check') : icon('alert'));
     flag.appendChild(flagIc); flag.appendChild(el('span', 'pln-flag-txt', statusLabel));
-    card.appendChild(flag);
+    top.appendChild(flag);
+    if (famKey === 'gfci' && sensor.entityId && onToggle) top.appendChild(buildToggle(sensor, onToggle));
+    card.appendChild(top);
     card.appendChild(el('h3', 'pln-name', sensor.name));
     if (sensor.zone) card.appendChild(el('div', 'pln-zone', sensor.zone));
     card.appendChild(el('div', 'pln-value pln-value-' + h, sensor.value));
@@ -322,7 +346,7 @@
   function tallyPill(kind, count, label) {
     var p = el('span', 'pln-tp pln-tp-' + kind); p.appendChild(el('span', 'pln-tp-n', String(count))); p.appendChild(el('span', 'pln-tp-l', label)); return p;
   }
-  function buildScreen(family) {
+  function buildScreen(family, onToggle) {
     var screen = el('div', 'pln-screen'), v = computeVerdict(family);
     var verdict = el('div', 'pln-verdict pln-verdict-' + v.tone); verdict.setAttribute('role', 'status');
     var vTop = el('div', 'pln-verdict-top'); var vIcon = el('span', 'pln-verdict-ic');
@@ -342,7 +366,7 @@
     if (v.crit) tally.appendChild(tallyPill('crit', v.crit, 'critical'));
     verdict.appendChild(tally); screen.appendChild(verdict);
     var grid = el('div', 'pln-grid');
-    sortSensors(family.sensors || []).forEach(function (s) { grid.appendChild(buildCard(s)); });
+    sortSensors(family.sensors || []).forEach(function (s) { grid.appendChild(buildCard(s, family.key, onToggle)); });
     screen.appendChild(grid);
     return { node: screen, verdict: verdict };
   }
@@ -416,7 +440,14 @@
       P + ' .pln-card-warn{border-color:#3A3420;background:linear-gradient(180deg,var(--card-warn),var(--card));}',
       P + ' .pln-card-critical{border-color:#4A2226;background:linear-gradient(180deg,var(--card-crit),var(--card));}',
       P + ' .pln-card:focus-visible{outline:2px solid var(--ink);outline-offset:2px;}',
-      P + ' .pln-flag{align-self:flex-start;display:inline-flex;align-items:center;gap:4px;padding:3px 8px 3px 6px;border-radius:16px;font-size:10px;font-weight:900;letter-spacing:0.05em;margin-left:2px;}',
+      P + ' .pln-cardtop{display:flex;align-items:center;justify-content:space-between;gap:8px;}',
+      P + ' .pln-flag{display:inline-flex;align-items:center;gap:4px;padding:3px 8px 3px 6px;border-radius:16px;font-size:10px;font-weight:900;letter-spacing:0.05em;margin-left:2px;}',
+      P + ' .pln-toggle{position:relative;width:42px;height:24px;flex:none;border:1px solid var(--line);background:#20272F;border-radius:14px;cursor:pointer;padding:0;transition:background .18s ease;}',
+      P + ' .pln-toggle-knob{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#8A94A2;transition:transform .2s cubic-bezier(.3,1.4,.5,1),background .18s;}',
+      P + ' .pln-toggle.is-on{background:var(--ok);border-color:transparent;}',
+      P + ' .pln-toggle.is-on .pln-toggle-knob{transform:translateX(18px);background:#06140C;}',
+      P + ' .pln-toggle.is-disabled{opacity:.38;cursor:not-allowed;}',
+      P + ' .pln-toggle:focus-visible{outline:2px solid var(--ink);outline-offset:2px;}',
       P + ' .pln-flag-ic{width:12px;height:12px;display:block;}',
       P + ' .pln-flag-ic svg{width:100%;height:100%;stroke-width:2.6;}',
       P + ' .pln-flag-ok{background:var(--ok-wash);color:var(--ok-ink);}',
@@ -518,7 +549,11 @@
         this._buttons[j].setAttribute('tabindex', on ? '0' : '-1');
       }
       this._stage.innerHTML = '';
-      var built = buildScreen(this._data.families[i]);
+      var self = this;
+      var onToggle = function (entityId, domain) {
+        if (self._hass && self._hass.callService) self._hass.callService(domain || 'light', 'toggle', { entity_id: entityId });
+      };
+      var built = buildScreen(this._data.families[i], onToggle);
       this._stage.appendChild(built.node);
       animateScreen(built, skipEnter);
     }
