@@ -7,18 +7,8 @@
   'use strict';
 
   // ---------------------------------------------------------------- config maps
-  var LEAK_NAMES = {
-    'binary_sensor.ikea_of_sweden_badring_water_leakage_sensor': 'Water Heater Pan',
-    'binary_sensor.ikea_of_sweden_badring_water_leakage_sensor_2': 'Dishwasher',
-    'binary_sensor.ikea_of_sweden_badring_water_leakage_sensor_3': 'Sump / Utility',
-    'binary_sensor.ikea_of_sweden_badring_water_leakage_sensor_4': 'HVAC Drain Pan',
-    'binary_sensor.kitchen_water_leak_sensor_kitchen_sink': 'Kitchen Sink',
-    'binary_sensor.water_leak_sensor_meg_sink': "Meg's Bath Sink",
-    'binary_sensor.water_leak_sensor_chris_sink': "Chris's Bath Sink",
-    'binary_sensor.water_leak_sensor_laundry_sink': 'Laundry Sink',
-    'binary_sensor.water_leak_sensor_refrigerator': 'Refrigerator Line',
-    'binary_sensor.water_leak_sensor_washer': 'Washing Machine'
-  };
+  // Leak sensor display names come straight from HA's friendly_name (prefix stripped)
+  // so they always match what's in HA — no hardcoded location guesses.
   var LEAK_BATT = {
     'binary_sensor.ikea_of_sweden_badring_water_leakage_sensor': 'sensor.ikea_of_sweden_badring_water_leakage_sensor_battery',
     'binary_sensor.ikea_of_sweden_badring_water_leakage_sensor_2': 'sensor.ikea_of_sweden_badring_water_leakage_sensor_battery_2',
@@ -42,6 +32,20 @@
   function titleize(s) {
     return s.replace(/_/g, ' ').replace(/\b\w/g, function (c) { return c.toUpperCase(); });
   }
+  // Real HA area for an entity: entity area, else its device's area, else null.
+  function areaOf(hass, entityId) {
+    try {
+      var ent = hass.entities && hass.entities[entityId];
+      var areaId = ent && ent.area_id;
+      if (!areaId && ent && ent.device_id && hass.devices) {
+        var dev = hass.devices[ent.device_id]; areaId = dev && dev.area_id;
+      }
+      if (areaId && hass.areas && hass.areas[areaId]) return hass.areas[areaId].name || null;
+    } catch (e) { /* registries may be absent */ }
+    return null;
+  }
+  // Clean leak display name: HA friendly_name with the shared "Water Leak Sensor - " prefix removed.
+  function stripLeakName(fn) { return (fn || '').replace(/^\s*water\s*leak\s*sensor\s*[-–—:]\s*/i, '').trim(); }
   function cleanGfci(fn) { return fn.replace(/\bGfci\b/g, 'GFCI'); }
   function leakZone(nm) {
     var n = nm.toLowerCase();
@@ -111,7 +115,10 @@
     var leakIds = (leakGroup && leakGroup.attributes && leakGroup.attributes.entity_id) || Object.keys(LEAK_NAMES);
     var leak = leakIds.map(function (id) {
       var s = states[id]; track(id);
-      var name = LEAK_NAMES[id] || titleize(id.replace(/^binary_sensor\./, ''));
+      var fn = (s && s.attributes && s.attributes.friendly_name) || '';
+      var name = stripLeakName(fn) || titleize(id.replace(/^binary_sensor\./, ''));
+      var area = areaOf(hass, id);
+      var zone = area || (/garage/i.test(name) ? 'Garage' : ''); // fall back to name only when no HA area is set
       var state = s ? s.state : 'unavailable';
       var online = state === 'on' || state === 'off';
       var wet = state === 'on';
@@ -128,7 +135,7 @@
       if (status !== 'critical') status = warnings.length ? 'warn' : 'ok';
       var lr = lastReport(s);
       return {
-        name: name, zone: leakZone(name), online: online,
+        name: name, zone: zone, online: online,
         value: wet ? 'Water detected!' : (online ? 'Dry' : '—'),
         battery: (battState == null || battState === 'unknown' || battState === 'unavailable') ? null : battery,
         warnings: warnings, status: status,
@@ -149,7 +156,7 @@
       if (!online) { warnings.push('No power — GFCI may be TRIPPED'); status = 'critical'; }
       var lr = lastReport(s);
       return {
-        name: name, zone: gfciZone(name), online: online,
+        name: name, zone: areaOf(hass, id) || gfciZone(name), online: online,
         value: online ? 'Powered' : 'No power (check GFCI)',
         battery: null, warnings: warnings, status: status,
         lastCT: lr ? fmtCT(lr) : '', ago: lr ? relAgo(lr, now) : '',

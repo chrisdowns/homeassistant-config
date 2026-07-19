@@ -51,6 +51,6 @@ panel_custom:
     sidebar_title: Guardian
     sidebar_icon: mdi:shield-home
     url_path: guardian
-    module_url: /local/pulse-noir-dashboard.js?v=2
+    module_url: /local/pulse-noir-dashboard.js?v=3
     embed_iframe: false
     require_admin: false
