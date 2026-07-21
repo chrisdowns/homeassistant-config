@@ -1,0 +1,12 @@
+# Media Center voice control — Wave 1 (receiver input select via Sony Audio Control API)
+# Projector (SDCP over WiFi->Ethernet bridge) and Nanoleaf lights are deferred to Wave 2.
+# Design: docs/media-center-voice-control-design.md
+# The input-select method/URI is verified live 2026-07-20: setPlayContent v1.2,
+# uri extInput:mediaBox (camelCase), output "" (main zone) -> switches receiver to Firestick.
+rest_command:
+  receiver_select_firestick:
+    url: "http://192.168.224.232:10000/sony/avContent"
+    method: POST
+    content_type: "application/json"
+    payload: >-
+      {"method":"setPlayContent","id":1,"params":[{"uri":"extInput:mediaBox","output":""}],"version":"1.2"}

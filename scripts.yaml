@@ -69,3 +69,27 @@ ensure_a_lock_is_locked:
             {{ tries }} attempt(s). Final state: {{ states(lock_entity) or ''unknown''
             }}.'
         action: persistent_notification.create
+
+media_center_start_movies:
+  alias: Start Watching Movies
+  mode: single
+  # Wave 1: receiver -> Firestick (Media Box) input + volume. Fire TV power comes from
+  # the Alexa routine's native Fire-TV action (its CEC also powers the receiver).
+  # Projector (SDCP/bridge) and Nanoleaf dim scene are added in Wave 2.
+  sequence:
+  - action: media_player.turn_on
+    target:
+      entity_id: media_player.str_az1000es
+    continue_on_error: true
+  - wait_template: >-
+      {{ not is_state('media_player.str_az1000es', 'unavailable')
+         and not is_state('media_player.str_az1000es', 'off') }}
+    timeout: '00:00:10'
+    continue_on_timeout: true
+  - action: media_player.volume_set
+    target:
+      entity_id: media_player.str_az1000es
+    data:
+      volume_level: 0.5   # movie-mode default; tune to taste
+    continue_on_error: true
+  - action: rest_command.receiver_select_firestick
