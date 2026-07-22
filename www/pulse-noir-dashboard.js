@@ -100,6 +100,94 @@
   }
   function toNum(v) { var n = parseFloat(v); return isNaN(n) ? null : n; }
 
+  // ---------------------------------------------------------------- detail view: time + history helpers
+  var CT_DATE = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Chicago', month: 'short', day: 'numeric' });
+  var CT_CLOCK = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit' });
+  function fmtDateCT(ms) { try { return CT_DATE.format(new Date(ms)); } catch (e) { return ''; } }
+  function fmtClockCT(ms) { try { return CT_CLOCK.format(new Date(ms)); } catch (e) { return ''; } }
+
+  // Normalize a history_during_period array -> [{t: ms, s: state}] ascending. NOTE: lu/lc are epoch SECONDS.
+  function normPts(arr) {
+    if (!arr || !arr.length) return [];
+    return arr.map(function (p) { var sec = (p.lu != null ? p.lu : p.lc); return { t: Math.round(sec * 1000), s: p.s }; })
+      .filter(function (p) { return !isNaN(p.t); })
+      .sort(function (a, b) { return a.t - b.t; });
+  }
+  // last point with t <= tMs (points ascending); null if none
+  function asOf(points, tMs) {
+    var out = null;
+    for (var i = 0; i < points.length; i++) { if (points[i].t <= tMs) out = points[i]; else break; }
+    return out;
+  }
+  // collapse consecutive identical states (drops attribute-only rows the recorder kept)
+  function collapseConsec(points) {
+    var out = [];
+    for (var i = 0; i < points.length; i++) { if (!out.length || out[out.length - 1].s !== points[i].s) out.push(points[i]); }
+    return out;
+  }
+  function battText(s) {
+    if (s == null) return '—';
+    if (s === 'unknown' || s === 'unavailable') return '?';
+    var n = toNum(s); return n == null ? '?' : Math.round(n) + '%';
+  }
+
+  // Build <=30 report rows for a sensor from a history_during_period result map.
+  // Rows: {t, dateCT, timeCT, status, valueText, batteryText}. startMs = window start (ms).
+  function buildReportRows(sensor, res, startMs) {
+    res = res || {};
+    var eps = startMs + 2000; // exclude the synthetic window-start boundary element
+    var rows = [];
+    if (sensor.kind === 'temp') {
+      var tp = normPts(res[sensor.entityId]);
+      var hp = sensor.humidityId ? normPts(res[sensor.humidityId]) : [];
+      var now = Date.now(), span = Math.max(1, now - startMs), N = 30, buckets = {};
+      tp.forEach(function (p) {
+        if (p.t <= eps) return;
+        var b = Math.min(N - 1, Math.floor((p.t - startMs) / span * N));
+        var cur = buckets[b]; if (!cur || p.t > cur.t) buckets[b] = p;
+      });
+      Object.keys(buckets).forEach(function (b) {
+        var p = buckets[b], v = toNum(p.s);
+        var valueText = v == null ? String(p.s) : v.toFixed(1) + '°F';
+        if (hp.length) { var h = asOf(hp, p.t); var hv = h && toNum(h.s); if (hv != null) valueText += ' · ' + Math.round(hv) + '%'; }
+        var status = 'ok';
+        if (v == null) status = 'warn';
+        else { if (sensor.lo != null && v < sensor.lo) status = 'critical'; if (sensor.hi != null && v > sensor.hi) status = 'critical'; }
+        rows.push({ t: p.t, dateCT: fmtDateCT(p.t), timeCT: fmtClockCT(p.t), status: status, valueText: valueText, batteryText: '—' });
+      });
+    } else if (sensor.kind === 'gfci') {
+      collapseConsec(normPts(res[sensor.entityId])).forEach(function (p) {
+        if (p.t <= eps) return;
+        // Card semantics: the plug reporting at all (on OR off) means the outlet has power; only unavailable/unknown = power loss.
+        var powered = p.s !== 'unavailable' && p.s !== 'unknown';
+        var valueText = p.s === 'on' ? 'On' : p.s === 'off' ? 'Off' : 'No power';
+        rows.push({ t: p.t, dateCT: fmtDateCT(p.t), timeCT: fmtClockCT(p.t), status: powered ? 'ok' : 'critical', valueText: valueText, batteryText: '—' });
+      });
+    } else { // leak: one row per check-in (battery report) unioned with leak state-changes
+      var lp = normPts(res[sensor.entityId]);
+      var lchg = collapseConsec(lp);
+      var bp = sensor.battId ? normPts(res[sensor.battId]) : [];
+      var times = [];
+      bp.forEach(function (p) { if (p.t > eps) times.push(p.t); });
+      lchg.forEach(function (p) { if (p.t > eps) times.push(p.t); });
+      times.sort(function (a, b) { return a - b; });
+      var merged = [];
+      times.forEach(function (t) { if (!merged.length || t - merged[merged.length - 1] > 60000) merged.push(t); });
+      merged.forEach(function (t) {
+        var ls = asOf(lp, t), st = ls ? ls.s : null;
+        var wet = st === 'on', dry = st === 'off';
+        var bv = asOf(bp, t), bs = bv ? bv.s : null, bn = toNum(bs);
+        var status = 'ok';
+        if (wet) status = 'critical';
+        else if (!dry) status = 'warn';
+        else if (bn != null && bn <= 20) status = 'warn';
+        rows.push({ t: t, dateCT: fmtDateCT(t), timeCT: fmtClockCT(t), status: status, valueText: wet ? 'Wet' : dry ? 'Dry' : '—', batteryText: battText(bs) });
+      });
+    }
+    rows.sort(function (a, b) { return b.t - a.t; });
+    return rows.slice(0, 30);
+  }
+
   // ---------------------------------------------------------------- build model from hass
   function buildData(hass) {
     var states = hass.states || {};
@@ -139,7 +227,8 @@
         value: wet ? 'Water detected!' : (online ? 'Dry' : '—'),
         battery: (battState == null || battState === 'unknown' || battState === 'unavailable') ? null : battery,
         warnings: warnings, status: status,
-        lastCT: lr ? fmtCT(lr) : '', ago: lr ? relAgo(lr, now) : '', device: 'Zigbee'
+        lastCT: lr ? fmtCT(lr) : '', ago: lr ? relAgo(lr, now) : '', device: 'Zigbee',
+        entityId: id, kind: 'leak', battId: battId || null
       };
     });
 
@@ -161,7 +250,7 @@
         battery: null, warnings: warnings, status: status,
         lastCT: lr ? fmtCT(lr) : '', ago: lr ? relAgo(lr, now) : '',
         device: (s && s.attributes && s.attributes.manufacturer) || 'Outlet monitor',
-        entityId: id, domain: id.split('.')[0], switchOn: state === 'on'
+        entityId: id, domain: id.split('.')[0], switchOn: state === 'on', kind: 'gfci'
       };
     });
 
@@ -189,11 +278,14 @@
       } else { warnings.push('Sensor offline / unreachable'); status = 'critical'; }
       track(id);
       var lr = lastReport(s);
+      var humId = id.indexOf('_temperature') > -1 ? id.replace('_temperature', '_humidity') : null;
+      if (humId && !states[humId]) humId = null;
       temp.push({
         name: nm, zone: meta.grp, online: online, value: value, battery: null,
         warnings: warnings, status: status, group: meta.grp,
         lastCT: lr ? fmtCT(lr) : '', ago: lr ? relAgo(lr, now) : '',
-        device: meta.grp === 'Cold chain' ? 'SDR 433MHz' : 'Zigbee/Thermostat'
+        device: meta.grp === 'Cold chain' ? 'SDR 433MHz' : 'Zigbee/Thermostat',
+        entityId: id, kind: 'temp', humidityId: humId, lo: meta.lo, hi: meta.hi
       });
     });
     var sev = { critical: 0, warn: 1, ok: 2 };
@@ -249,6 +341,7 @@
     else if (name === 'offline') svg += '<path d="M3 3l18 18"/><path d="M8.5 16.4a5 5 0 0 1 7 0"/><path d="M5 12.9a10 10 0 0 1 3.2-2.1"/><path d="M19 12.9a10 10 0 0 0-4.6-2.7"/><path d="M2 8.8A15 15 0 0 1 6 6.3"/><path d="M22 8.8a15 15 0 0 0-6.4-3.4"/><path d="M12 20h.01"/>';
     else if (name === 'check') svg += '<path d="M20 6 9 17l-5-5"/>';
     else if (name === 'alert') svg += '<path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 2 18a2 2 0 0 0 1.7 3h16.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>';
+    else if (name === 'back') svg += '<path d="M15 18l-6-6 6-6"/>';
     return svg + '</svg>';
   }
 
@@ -306,7 +399,7 @@
     return btn;
   }
 
-  function buildCard(sensor, famKey, onToggle) {
+  function buildCard(sensor, famKey, onToggle, onOpen) {
     var h = health(sensor), offline = !sensor.online;
     var card = el('article', 'pln-card pln-card-' + h);
     card.setAttribute('tabindex', '0');
@@ -346,6 +439,13 @@
     var conn = el('span', 'pln-conn ' + (offline ? 'pln-conn-off' : 'pln-conn-on'));
     conn.appendChild(el('span', 'pln-conn-dot')); conn.appendChild(el('span', null, offline ? 'Offline' : 'Online'));
     when.appendChild(conn); when.appendChild(el('span', 'pln-ago', sensor.ago || '')); when.appendChild(el('span', 'pln-ct', sensor.lastCT || ''));
+    if (onOpen && sensor.entityId) {
+      when.classList.add('pln-when-click');
+      when.setAttribute('role', 'button'); when.setAttribute('tabindex', '0');
+      when.setAttribute('aria-label', 'View recent reports for ' + sensor.name);
+      when.addEventListener('click', function (e) { e.stopPropagation(); onOpen(sensor); });
+      when.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(sensor); } });
+    }
     meta.appendChild(when); card.appendChild(meta);
     return card;
   }
@@ -353,7 +453,7 @@
   function tallyPill(kind, count, label) {
     var p = el('span', 'pln-tp pln-tp-' + kind); p.appendChild(el('span', 'pln-tp-n', String(count))); p.appendChild(el('span', 'pln-tp-l', label)); return p;
   }
-  function buildScreen(family, onToggle) {
+  function buildScreen(family, onToggle, onOpen) {
     var screen = el('div', 'pln-screen'), v = computeVerdict(family);
     var verdict = el('div', 'pln-verdict pln-verdict-' + v.tone); verdict.setAttribute('role', 'status');
     var vTop = el('div', 'pln-verdict-top'); var vIcon = el('span', 'pln-verdict-ic');
@@ -373,7 +473,7 @@
     if (v.crit) tally.appendChild(tallyPill('crit', v.crit, 'critical'));
     verdict.appendChild(tally); screen.appendChild(verdict);
     var grid = el('div', 'pln-grid');
-    sortSensors(family.sensors || []).forEach(function (s) { grid.appendChild(buildCard(s, family.key, onToggle)); });
+    sortSensors(family.sensors || []).forEach(function (s) { grid.appendChild(buildCard(s, family.key, onToggle, onOpen)); });
     screen.appendChild(grid);
     return { node: screen, verdict: verdict };
   }
@@ -502,7 +602,53 @@
       '@media (min-width:560px){' + P + '{padding:18px 18px 48px;}' + P + ' .pln-grid{grid-template-columns:repeat(3,1fr);gap:12px;}' + P + ' .pln-verdict-num{font-size:84px;}' + P + ' .pln-verdict-word{font-size:40px;}' + P + ' .pln-verdict-word-full{font-size:56px;}' + P + ' .pln-name{font-size:15.5px;}' + P + ' .pln-value{font-size:26px;}}',
       '@media (min-width:860px){' + P + ' .pln-grid{grid-template-columns:repeat(4,1fr);}}',
       '@media (min-width:1200px){' + P + ' .pln-grid{grid-template-columns:repeat(5,1fr);}' + P + ' .pln-wrap{max-width:1160px;margin:0 auto;}}',
-      '@media (prefers-reduced-motion: reduce){' + P + ' .pln-verdict{transition:none;}' + P + ' .pln-verdict.pln-enter{transform:none;opacity:1;}' + P + ' .pln-ring-fill{transition:none;}}'
+      // ---- clickable footer (appearance-preserving: text unchanged; only affordances) ----
+      P + ' .pln-when-click{cursor:pointer;-webkit-tap-highlight-color:transparent;border-radius:9px;padding:3px 4px 3px 8px;margin:-3px -4px -3px -8px;transition:background .15s ease;}',
+      P + ' .pln-when-click:hover{background:rgba(255,255,255,0.04);}',
+      P + ' .pln-when-click:focus-visible{outline:2px solid var(--ink);outline-offset:2px;}',
+      // ---- detail view ----
+      P + ' .pln-detail{animation:plnfade .28s ease;}',
+      '@keyframes plnfade{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:none;}}',
+      P + ' .pln-dhead{margin-bottom:14px;}',
+      P + ' .pln-back{display:inline-flex;align-items:center;gap:5px;background:#12171E;border:1px solid var(--line-soft);color:var(--ink-dim);font-family:inherit;font-weight:800;font-size:12px;padding:8px 12px 8px 9px;border-radius:11px;cursor:pointer;min-height:40px;-webkit-tap-highlight-color:transparent;}',
+      P + ' .pln-back:hover{color:var(--ink);border-color:var(--line);}',
+      P + ' .pln-back:focus-visible{outline:2px solid var(--ink);outline-offset:2px;}',
+      P + ' .pln-back svg{width:16px;height:16px;stroke-width:2.4;}',
+      P + ' .pln-dtitle{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 10px;margin:14px 2px 0;}',
+      P + ' .pln-dname{font-size:22px;font-weight:900;letter-spacing:-0.02em;}',
+      P + ' .pln-dzone{font-size:10px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:0.09em;}',
+      P + ' .pln-dnow{display:flex;align-items:center;gap:10px;margin:9px 2px 0;}',
+      P + ' .pln-dpill{font-size:10.5px;font-weight:900;letter-spacing:0.05em;padding:3px 9px;border-radius:16px;}',
+      P + ' .pln-dpill-ok{background:var(--ok-wash);color:var(--ok-ink);}',
+      P + ' .pln-dpill-warn{background:var(--warn-wash);color:var(--warn-ink);}',
+      P + ' .pln-dpill-critical{background:var(--crit-wash);color:var(--crit-ink);}',
+      P + ' .pln-dval{font-size:15px;font-weight:800;color:var(--ink-dim);font-variant-numeric:tabular-nums;}',
+      P + ' .pln-dbody{margin-top:4px;}',
+      P + ' .pln-loading,' + P + ' .pln-empty{padding:34px 8px;text-align:center;color:var(--muted);font-size:13px;font-weight:700;}',
+      P + ' .pln-error{padding:30px 8px;text-align:center;color:var(--crit-ink);font-size:13px;font-weight:700;display:flex;flex-direction:column;align-items:center;gap:12px;}',
+      P + ' .pln-retry{background:#12171E;border:1px solid var(--line);color:var(--ink);font-family:inherit;font-weight:800;font-size:12.5px;padding:9px 18px;border-radius:11px;cursor:pointer;min-height:40px;}',
+      P + ' .pln-rlist{display:flex;flex-direction:column;gap:6px;}',
+      P + ' .pln-rrow{display:grid;grid-template-columns:minmax(92px,1.15fr) 62px 1fr auto;gap:8px;align-items:center;background:var(--card);border:1px solid var(--line);border-left-width:4px;border-radius:11px;padding:9px 11px;}',
+      P + ' .pln-rrow-ok{border-left-color:var(--ok);}',
+      P + ' .pln-rrow-warn{border-left-color:var(--warn);background:linear-gradient(180deg,var(--card-warn),var(--card));}',
+      P + ' .pln-rrow-critical{border-left-color:var(--crit);background:linear-gradient(180deg,var(--card-crit),var(--card));}',
+      P + ' .pln-rhead{background:transparent;border:0;padding:2px 11px;}',
+      P + ' .pln-rhead .pln-rc{font-size:9px;font-weight:900;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;}',
+      P + ' .pln-rc{min-width:0;font-size:12.5px;font-weight:700;}',
+      P + ' .pln-rwhen{display:flex;flex-direction:column;gap:1px;}',
+      P + ' .pln-rdate{font-weight:900;font-size:12.5px;color:var(--ink);font-variant-numeric:tabular-nums;}',
+      P + ' .pln-rtime{font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums;}',
+      P + ' .pln-rstatus{display:inline-flex;align-items:center;gap:5px;}',
+      P + ' .pln-rdot{width:8px;height:8px;border-radius:50%;flex:none;}',
+      P + ' .pln-rdot-ok{background:var(--ok);}',
+      P + ' .pln-rdot-warn{background:var(--warn);}',
+      P + ' .pln-rdot-critical{background:var(--crit);}',
+      P + ' .pln-rstat{font-size:10.5px;font-weight:800;color:var(--ink-dim);}',
+      P + ' .pln-rval{font-weight:900;font-size:13.5px;letter-spacing:-0.01em;color:var(--ink);font-variant-numeric:tabular-nums;word-break:break-word;}',
+      P + ' .pln-rbatt{font-size:12px;font-weight:800;color:var(--ink-dim);text-align:right;font-variant-numeric:tabular-nums;}',
+      P + ' .pln-rnote{margin:12px 2px 0;font-size:10.5px;color:var(--muted);font-weight:700;text-align:center;}',
+      '@media (min-width:560px){' + P + ' .pln-rrow{grid-template-columns:minmax(120px,1fr) 90px 1.2fr auto;padding:11px 14px;}' + P + ' .pln-dname{font-size:26px;}}',
+      '@media (prefers-reduced-motion: reduce){' + P + ' .pln-verdict{transition:none;}' + P + ' .pln-verdict.pln-enter{transform:none;opacity:1;}' + P + ' .pln-ring-fill{transition:none;}' + P + ' .pln-detail{animation:none;}}'
     ].join('');
   }
 
@@ -549,6 +695,7 @@
     }
 
     _select(i, skipEnter) {
+      this._detail = null; // leaving any open detail view when a family is (re)selected
       this._sel = i;
       for (var j = 0; j < 3; j++) {
         var on = j === i;
@@ -560,9 +707,122 @@
       var onToggle = function (entityId, domain) {
         if (self._hass && self._hass.callService) self._hass.callService(domain || 'light', 'toggle', { entity_id: entityId });
       };
-      var built = buildScreen(this._data.families[i], onToggle);
+      var onOpen = function (sensor) { self._openDetail(sensor); };
+      var built = buildScreen(this._data.families[i], onToggle, onOpen);
       this._stage.appendChild(built.node);
       animateScreen(built, skipEnter);
+    }
+
+    // ---- single-sensor detail view ----
+    _openDetail(sensor) {
+      this._detail = sensor;
+      var token = (this._detailToken = (this._detailToken || 0) + 1); // unique per open; sensor objects are reused so identity isn't enough
+      this._renderDetailShell(sensor);
+      var self = this;
+      var startMs = Date.now() - (sensor.kind === 'temp' ? 2 : 90) * 86400000;
+      this._fetchReports(sensor, startMs).then(function (rows) {
+        if (self._detailToken !== token || !self._detail) return; // navigated away or reopened before fetch resolved
+        self._renderRows(rows);
+      }).catch(function () {
+        if (self._detailToken !== token || !self._detail) return;
+        self._renderError();
+      });
+    }
+
+    _fetchReports(sensor, startMs) {
+      var hass = this._hass;
+      if (!hass || !hass.callWS) return Promise.reject(new Error('no hass.callWS'));
+      var ids = [sensor.entityId];
+      if (sensor.kind === 'leak' && sensor.battId) ids.push(sensor.battId);
+      if (sensor.kind === 'temp' && sensor.humidityId) ids.push(sensor.humidityId);
+      return hass.callWS({
+        type: 'history/history_during_period',
+        start_time: new Date(startMs).toISOString(),
+        end_time: new Date().toISOString(),
+        entity_ids: ids, minimal_response: false, no_attributes: true, significant_changes_only: false
+      }).then(function (res) { return buildReportRows(sensor, res, startMs); });
+    }
+
+    _renderDetailShell(sensor) {
+      this._stage.innerHTML = '';
+      var self = this;
+      var wrap = el('div', 'pln-detail');
+      var head = el('div', 'pln-dhead');
+      var back = el('button', 'pln-back'); back.type = 'button';
+      back.innerHTML = icon('back'); back.appendChild(el('span', null, 'All sensors'));
+      back.setAttribute('aria-label', 'Back to all sensors');
+      back.addEventListener('click', function () { self._closeDetail(); });
+      head.appendChild(back);
+      var titleRow = el('div', 'pln-dtitle');
+      titleRow.appendChild(el('div', 'pln-dname', sensor.name));
+      if (sensor.zone) titleRow.appendChild(el('div', 'pln-dzone', sensor.zone));
+      head.appendChild(titleRow);
+      var nowRow = el('div', 'pln-dnow');
+      var h = health(sensor);
+      var pill = el('span', 'pln-dpill pln-dpill-' + h, h === 'critical' ? (sensor.online ? 'CRITICAL' : 'OFFLINE') : h === 'warn' ? 'WATCH' : 'OK');
+      var val = el('span', 'pln-dval', sensor.value || '');
+      nowRow.appendChild(pill); nowRow.appendChild(val);
+      head.appendChild(nowRow);
+      wrap.appendChild(head);
+      this._detailHdr = { pill: pill, val: val };
+      var body = el('div', 'pln-dbody');
+      body.appendChild(el('div', 'pln-loading', 'Loading recent reports…'));
+      wrap.appendChild(body);
+      this._detailBody = body;
+      this._stage.appendChild(wrap);
+      try { back.focus(); } catch (e) { /* focus optional */ }
+    }
+
+    _renderRows(rows) {
+      var body = this._detailBody; if (!body) return; body.innerHTML = '';
+      if (!rows || !rows.length) { body.appendChild(el('div', 'pln-empty', 'No changes recorded in this window — a steady reading is not stored as a new report.')); return; }
+      var list = el('div', 'pln-rlist');
+      var head = el('div', 'pln-rrow pln-rhead');
+      ['When (CT)', 'Status', 'Value', 'Batt'].forEach(function (t) { head.appendChild(el('span', 'pln-rc', t)); });
+      list.appendChild(head);
+      rows.forEach(function (r) {
+        var row = el('div', 'pln-rrow pln-rrow-' + r.status);
+        var when = el('span', 'pln-rc pln-rwhen');
+        when.appendChild(el('span', 'pln-rdate', r.dateCT));
+        when.appendChild(el('span', 'pln-rtime', r.timeCT));
+        row.appendChild(when);
+        var stc = el('span', 'pln-rc pln-rstatus');
+        stc.appendChild(el('span', 'pln-rdot pln-rdot-' + r.status));
+        stc.appendChild(el('span', 'pln-rstat', r.status === 'critical' ? 'Alert' : r.status === 'warn' ? 'Watch' : 'OK'));
+        row.appendChild(stc);
+        row.appendChild(el('span', 'pln-rc pln-rval', r.valueText));
+        row.appendChild(el('span', 'pln-rc pln-rbatt', r.batteryText));
+        list.appendChild(row);
+      });
+      body.appendChild(list);
+      body.appendChild(el('div', 'pln-rnote', rows.length + (rows.length === 1 ? ' report' : ' reports') + ' · most recent first'));
+    }
+
+    _renderError() {
+      var body = this._detailBody; if (!body) return; body.innerHTML = '';
+      var self = this, wrap = el('div', 'pln-error');
+      wrap.appendChild(el('div', null, 'Couldn’t load history.'));
+      var retry = el('button', 'pln-retry', 'Retry'); retry.type = 'button';
+      retry.addEventListener('click', function () { if (self._detail) self._openDetail(self._detail); });
+      wrap.appendChild(retry); body.appendChild(wrap);
+    }
+
+    _closeDetail() {
+      this._detail = null;
+      this._select(this._sel, true);
+      try { this._buttons[this._sel].focus(); } catch (e) { /* focus optional */ }
+    }
+
+    // Patch just the detail header from fresh data on a background refresh (stage not rebuilt).
+    _patchDetailHeader() {
+      if (!this._detail || !this._detailHdr || !this._data) return;
+      var eid = this._detail.entityId, fresh = null;
+      this._data.families.forEach(function (f) { (f.sensors || []).forEach(function (s) { if (s.entityId === eid) fresh = s; }); });
+      if (!fresh) return;
+      var h = health(fresh);
+      this._detailHdr.pill.className = 'pln-dpill pln-dpill-' + h;
+      this._detailHdr.pill.textContent = h === 'critical' ? (fresh.online ? 'CRITICAL' : 'OFFLINE') : h === 'warn' ? 'WATCH' : 'OK';
+      this._detailHdr.val.textContent = fresh.value || '';
     }
 
     _updateTabs() {
@@ -584,6 +844,7 @@
       this._sig = res.sig; this._data = res.data;
       this._gen.textContent = res.data.generatedCT;
       this._updateTabs();
+      if (this._detail && !firstRender) { this._patchDetailHeader(); return; } // keep open detail view; refresh its header only
       this._select(this._sel, !firstRender); // skip enter-zoom on background refreshes
     }
     get hass() { return this._hass; }
@@ -601,5 +862,5 @@
   }
 
   // eslint-disable-next-line no-console
-  console.info('%c Home Guardian — Pulse Noir %c loaded ', 'background:#0C0F13;color:#2ED27C;font-weight:700', '');
+  console.info('%c Home Guardian — Pulse Noir %c loaded (v4 · sensor-detail) ', 'background:#0C0F13;color:#2ED27C;font-weight:700', '');
 })();
