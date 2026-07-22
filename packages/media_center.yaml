@@ -10,3 +10,11 @@ rest_command:
     content_type: "application/json"
     payload: >-
       {"method":"setPlayContent","id":1,"params":[{"uri":"extInput:mediaBox","output":""}],"version":"1.2"}
+
+# Projector (Sony VPL-VW295ES) on the LAN at 192.168.224.198 (SDCP :53484 open).
+# No HDMI-CEC on this model -> HA controls power over SDCP. Creates switch.projector
+# with on/off + power-state feedback.
+switch:
+  - platform: sony_projector
+    host: 192.168.224.198
+    name: Projector
