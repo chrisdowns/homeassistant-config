@@ -73,10 +73,14 @@ ensure_a_lock_is_locked:
 media_center_start_movies:
   alias: Start Watching Movies
   mode: single
-  # Wave 1: receiver -> Firestick (Media Box) input + volume. Fire TV power comes from
-  # the Alexa routine's native Fire-TV action (its CEC also powers the receiver).
-  # Projector (SDCP/bridge) and Nanoleaf dim scene are added in Wave 2.
+  # Projector on (SDCP) + receiver -> Firestick (Media Box) input + volume. Fire TV power
+  # comes from the Alexa routine's native Fire-TV action (its CEC also powers the receiver).
+  # Nanoleaf lights OFF is pending the Skylight re-pair (see placeholder below).
   sequence:
+  - action: switch.turn_on          # projector first — lamp warm-up is the longest pole; don't block on it
+    target:
+      entity_id: switch.projector
+    continue_on_error: true
   - action: media_player.turn_on
     target:
       entity_id: media_player.str_az1000es
@@ -103,17 +107,16 @@ media_center_stop_movies:
   alias: Stop Watching Movies
   mode: single
   # Turn everything off EXCEPT lights (lights come ON). Fire TV is put to sleep by the
-  # Alexa "stop" routine's native Fire-TV action. Projector-off is Wave 2 (needs the bridge).
+  # Alexa "stop" routine's native Fire-TV action.
   sequence:
   - action: media_player.turn_off
     target:
       entity_id: media_player.str_az1000es
     continue_on_error: true
-  # PROJECTOR OFF — WIRE in Wave 2 once the WiFi->Ethernet bridge + sony_projector are in.
-  # - action: switch.turn_off        # or the projector entity the integration creates
-  #   target:
-  #     entity_id: switch.projector
-  #   continue_on_error: true
+  - action: switch.turn_off
+    target:
+      entity_id: switch.projector
+    continue_on_error: true
   # LIGHTS ON — WIRE 2026-07-21 once the Nanoleaf Skylight is reconnected
   # (likely light.skylight_67bb). Placeholder:
   # - action: light.turn_on
