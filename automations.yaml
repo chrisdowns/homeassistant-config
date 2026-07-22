@@ -485,8 +485,8 @@
         title: '{{ msg_title }}'
         message: '{{ msg_body }}'
         data:
-          channel: '{{ ''Critical Home Alerts'' if notify_case == ''jammed'' else ''Locks''
-            }}'
+          channel: '{{ ''Critical Home Alerts'' if notify_case == ''jammed'' else
+            ''Locks'' }}'
           importance: '{{ ''high'' if notify_case == ''jammed'' else ''default'' }}'
           priority: high
           ttl: 0
@@ -701,15 +701,17 @@
   mode: queued
   max: 5
 - id: master_vacuum_skip_if_tv_on
-  alias: Master vacuum — daily 5pm run unless master TV is on
+  alias: Master vacuum — daily run unless master TV is on
   description: Starts the master Roborock (S5 Max) at 5pm CT only when the master
     TV is off. TV-on is inferred from the master Sonos soundbar's source == 'TV'.
   triggers:
-  - at: '17:00:00'
+  - at: '18:00:00'
     trigger: time
   conditions:
   - condition: template
-    value_template: "{{ state_attr('media_player.master_bedroom_tv','source') != 'TV' and not is_state('media_player.master_master_samsung_tv','on') }}"
+    value_template: '{{ state_attr(''media_player.master_bedroom_tv'',''source'')
+      != ''TV'' and not is_state(''media_player.master_master_samsung_tv'',''on'')
+      }}'
   actions:
   - action: vacuum.start
     target:
@@ -717,16 +719,17 @@
   mode: single
 - id: master_vacuum_dock_if_tv_on
   alias: Master vacuum — send home if it starts while master TV is on
-  description: Safety net for ANY start source (incl. a leftover Roborock cloud
-    schedule). If the master robot begins cleaning while the master TV is on
-    (Sonos soundbar source=TV OR native Samsung TV state=on), dock it and notify.
+  description: Safety net for ANY start source (incl. a leftover Roborock cloud schedule).
+    If the master robot begins cleaning while the master TV is on (Sonos soundbar
+    source=TV OR native Samsung TV state=on), dock it and notify.
   triggers:
   - trigger: state
     entity_id: vacuum.master_s5_max
     to: cleaning
   conditions:
   - condition: template
-    value_template: "{{ state_attr('media_player.master_bedroom_tv','source') == 'TV' or is_state('media_player.master_master_samsung_tv','on') }}"
+    value_template: '{{ state_attr(''media_player.master_bedroom_tv'',''source'')
+      == ''TV'' or is_state(''media_player.master_master_samsung_tv'',''on'') }}'
   actions:
   - action: vacuum.return_to_base
     target:
