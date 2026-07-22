@@ -90,12 +90,7 @@ media_center_start_movies:
          and not is_state('media_player.str_az1000es', 'off') }}
     timeout: '00:00:10'
     continue_on_timeout: true
-  - action: media_player.volume_set
-    target:
-      entity_id: media_player.str_az1000es
-    data:
-      volume_level: 0.5   # movie-mode default; tune to taste
-    continue_on_error: true
+  - action: rest_command.receiver_volume_movie   # AVR master vol -> 50/74 (Sony API)
   - action: rest_command.receiver_select_firestick
   - action: light.turn_off        # movie mode = dark
     target:
