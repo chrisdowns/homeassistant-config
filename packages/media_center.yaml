@@ -10,6 +10,14 @@ rest_command:
     content_type: "application/json"
     payload: >-
       {"method":"setPlayContent","id":1,"params":[{"uri":"extInput:mediaBox","output":""}],"version":"1.2"}
+  # AVR MASTER volume (zone 1), scale 0-74. Set via the Sony API, NOT the DLNA
+  # media_player (that renderer volume is a different sink and races on availability).
+  receiver_volume_movie:
+    url: "http://192.168.224.232:10000/sony/audio"
+    method: POST
+    content_type: "application/json"
+    payload: >-
+      {"method":"setAudioVolume","id":1,"params":[{"output":"extOutput:zone?zone=1","volume":"50"}],"version":"1.1"}
 
 # Projector (Sony VPL-VW295ES) on the LAN at 192.168.224.198 (SDCP :53484 open).
 # No HDMI-CEC on this model -> HA controls power over SDCP. Creates switch.projector
