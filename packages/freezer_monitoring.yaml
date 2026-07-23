@@ -259,11 +259,14 @@ binary_sensor:
         min_gradient: 0.002222
         min_samples: 4
         max_samples: 60
-      garage_fridge_freezer_rising:     # fridge-class: 8 F/hr over 45 min (settled stdev 1.15)
+      garage_fridge_freezer_rising:     # fridge-class, DEFROST-TOLERANT: ~13 F/hr over 45 min
+        # min_gradient raised 0.002222->0.0035 (2026-07-23): the daily auto-defrost
+        # ramps ~1.1 F/min (66 F/hr) but the 8 F/hr setting also tripped on normal
+        # band drift/reload noise. LOW CONFIDENCE — revisit after a week of data.
         friendly_name: "Garage Fridge-Freezer Rising"
         entity_id: sensor.garage_fridge_freezer_temperature
         sample_duration: 2700
-        min_gradient: 0.002222
+        min_gradient: 0.0035
         min_samples: 4
         max_samples: 60
       outdoor_kitchen_fridge_rising:    # fridge-class: 8 F/hr over 45 min (probe is inside the box, so outdoor ambient swings don't reach it)
@@ -278,364 +281,112 @@ binary_sensor:
         max_samples: 60
 
 automation:
-  # ===================== GARAGE FREEZER (channel B) =====================
-  - id: frzmon_garage_freezer_warm_warn
-    alias: "Freezer monitor — garage freezer warm (warn)"
+  # ============================================================================
+  # Temperature alerts — ALL units in ONE automation (2026-07-23 consolidation of
+  # the former 15 per-unit warn/urgent/rising automations). Per-unit thresholds
+  # live in the trigger table below; trigger.id (warn|urgent) is the case switch
+  # that routes severity/channel. HA does NOT allow templating numeric_state
+  # `above:`, so each unit keeps its own trigger row — but not its own automation.
+  # All notifications route through script.frzmon_notify (both phones, one place).
+  #
+  # Thresholds retuned 2026-07-23 off 7 days of live data — DURATION-based, not
+  # amplitude-based, so a slow failure that plateaus at a low temp is still caught
+  # while normal auto-defrost humps (narrow, <=27 min wide) are filtered out:
+  #   Garage freezer        warn >-5/20m            urgent >10/10m   (unchanged; quiet)
+  #   Garage fridge         warn >42/20m + >40/2h   urgent >45/10m
+  #     >42 catches a fast rise; >40-for-2h catches a stuck-at-41 drift. Both sit
+  #     inside the USDA <=40-for-2h food-safety line. 43°F was actually seen 07-16.
+  #   Kitchen fridge        warn >40/10m            urgent >45/10m   (unchanged; quiet)
+  #   Garage fridge-freezer warn >10/45m            urgent >15/35m
+  #     Defrost sustains <=27m above 10°F and <=20m above 15°F, so the long `for`
+  #     filters it. The LOW absolute thresholds are kept on purpose: raising them
+  #     to >25/>32 would be fail-deadly — a real failure that plateaus in the
+  #     10-25°F band would never trip, and >32 only alerts at the food-melt line.
+  #   Outdoor kitchen fridge: OMITTED until the ESPHome unit lands (was disabled).
+  # ============================================================================
+  - id: frzmon_temp_alerts
+    alias: "Freezer monitor — temperature alerts (all units)"
+    mode: parallel
+    max: 20
     trigger:
-      - platform: numeric_state
-        entity_id: sensor.garage_freezer_temperature
-        above: -5
-        for: { minutes: 20 }
+      - { platform: numeric_state, id: warn,   entity_id: sensor.garage_freezer_temperature,        above: -5, for: { minutes: 20 } }
+      - { platform: numeric_state, id: urgent, entity_id: sensor.garage_freezer_temperature,        above: 10, for: { minutes: 10 } }
+      - { platform: numeric_state, id: warn,   entity_id: sensor.garage_fridge_temperature,         above: 42, for: { minutes: 20 } }
+      - { platform: numeric_state, id: warn,   entity_id: sensor.garage_fridge_temperature,         above: 40, for: { hours: 2 } }
+      - { platform: numeric_state, id: urgent, entity_id: sensor.garage_fridge_temperature,         above: 45, for: { minutes: 10 } }
+      - { platform: numeric_state, id: warn,   entity_id: sensor.kitchen_fridge_temperature,        above: 40, for: { minutes: 10 } }
+      - { platform: numeric_state, id: urgent, entity_id: sensor.kitchen_fridge_temperature,        above: 45, for: { minutes: 10 } }
+      - { platform: numeric_state, id: warn,   entity_id: sensor.garage_fridge_freezer_temperature, above: 10, for: { minutes: 45 } }
+      - { platform: numeric_state, id: urgent, entity_id: sensor.garage_fridge_freezer_temperature, above: 15, for: { minutes: 35 } }
+    variables:
+      names:
+        sensor.garage_freezer_temperature: "Garage freezer"
+        sensor.garage_fridge_temperature: "Garage fridge"
+        sensor.kitchen_fridge_temperature: "Kitchen fridge"
+        sensor.garage_fridge_freezer_temperature: "Garage fridge-freezer"
     action:
-      - action: notify.mobile_app_chriss_iphone
+      - variables:
+          n: "{{ names[trigger.entity_id] | default(trigger.entity_id) }}"
+          crit: "{{ trigger.id == 'urgent' }}"
+      - action: script.frzmon_notify
         data:
-          title: "⚠️ Garage freezer warming"
-          message: "Garage freezer is {{ trigger.to_state.state }}°F (>-5) for 20 min."
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-      - action: notify.mobile_app_pixel_9_pro_xl
-        data:
-          title: "⚠️ Garage freezer warming"
-          message: "Garage freezer is {{ trigger.to_state.state }}°F (>-5) for 20 min."
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+          critical: "{{ crit }}"
+          title: "{{ ('🚨 ' ~ n ~ ' FAILING') if crit else ('⚠️ ' ~ n ~ ' warming') }}"
+          message: "{{ n }} is {{ trigger.to_state.state }}°F (sustained over {{ trigger.above }}°F){{ ' — check it now' if crit else '' }}."
 
-  - id: frzmon_garage_freezer_warm_urgent
-    alias: "Freezer monitor — garage freezer warm (URGENT)"
+  # ---- Rate-of-rise (door-ajar / slow-failure early warning) — all units, one automation ----
+  # Each *_rising trend binary_sensor fires this; the condition gates it BELOW that
+  # unit's warn line so it never double-fires with the absolute warn above. Per-unit
+  # temp sensor + warn line + friendly name come from the lookup dicts.
+  - id: frzmon_rising_alerts
+    alias: "Freezer monitor — steadily warming (all units)"
+    mode: parallel
+    max: 20
     trigger:
-      - platform: numeric_state
-        entity_id: sensor.garage_freezer_temperature
-        above: 10
-        for: { minutes: 10 }
-    action:
-      - action: notify.mobile_app_chriss_iphone
-        data:
-          title: "🚨 Garage freezer FAILING"
-          message: "Garage freezer is {{ trigger.to_state.state }}°F (>10) for 10 min — check it."
-          data:
-            channel: Critical Home Alerts
-            importance: high
-            priority: high
-            ttl: 0
-            push: { interruption-level: time-sensitive }
-      - action: notify.mobile_app_pixel_9_pro_xl
-        data:
-          title: "🚨 Garage freezer FAILING"
-          message: "Garage freezer is {{ trigger.to_state.state }}°F (>10) for 10 min — check it."
-          data: { channel: Critical Home Alerts, importance: high, priority: high, ttl: 0 }
-
-  - id: frzmon_garage_freezer_rising
-    alias: "Freezer monitor — garage freezer steadily warming (door ajar?)"
-    # Fires on a sustained ~5°F/hr rise (trend binary_sensor) while the box is
-    # still below the -5°F warn line — early door-ajar / slow-failure catch.
-    trigger:
-      - platform: state
-        entity_id: binary_sensor.garage_freezer_rising
-        to: "on"
-        for: { minutes: 5 }
+      - { platform: state, entity_id: binary_sensor.garage_freezer_rising,        to: "on", for: { minutes: 5 } }
+      - { platform: state, entity_id: binary_sensor.garage_fridge_rising,         to: "on", for: { minutes: 20 } }
+      - { platform: state, entity_id: binary_sensor.kitchen_fridge_rising,        to: "on", for: { minutes: 20 } }
+      - { platform: state, entity_id: binary_sensor.garage_fridge_freezer_rising, to: "on", for: { minutes: 20 } }
+    variables:
+      temp_of:
+        binary_sensor.garage_freezer_rising: sensor.garage_freezer_temperature
+        binary_sensor.garage_fridge_rising: sensor.garage_fridge_temperature
+        binary_sensor.kitchen_fridge_rising: sensor.kitchen_fridge_temperature
+        binary_sensor.garage_fridge_freezer_rising: sensor.garage_fridge_freezer_temperature
+      warn_of:
+        binary_sensor.garage_freezer_rising: -5
+        binary_sensor.garage_fridge_rising: 40
+        binary_sensor.kitchen_fridge_rising: 40
+        binary_sensor.garage_fridge_freezer_rising: 10
+      names:
+        binary_sensor.garage_freezer_rising: "Garage freezer"
+        binary_sensor.garage_fridge_rising: "Garage fridge"
+        binary_sensor.kitchen_fridge_rising: "Kitchen fridge"
+        binary_sensor.garage_fridge_freezer_rising: "Garage fridge-freezer"
     condition:
-      - condition: numeric_state
-        entity_id: sensor.garage_freezer_temperature
-        below: -5
+      - condition: template
+        value_template: "{{ states(temp_of[trigger.entity_id]) | float(999) < (warn_of[trigger.entity_id] | float) }}"
     action:
-      - action: notify.mobile_app_chriss_iphone
+      - variables:
+          n: "{{ names[trigger.entity_id] }}"
+          t: "{{ temp_of[trigger.entity_id] }}"
+      - action: script.frzmon_notify
         data:
-          title: "📈 Garage freezer steadily warming"
-          message: "Rising ~5°F/hr for 30+ min, now {{ states('sensor.garage_freezer_temperature') }}°F — door ajar or failing?"
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-      - action: notify.mobile_app_pixel_9_pro_xl
-        data:
-          title: "📈 Garage freezer steadily warming"
-          message: "Rising ~5°F/hr for 30+ min, now {{ states('sensor.garage_freezer_temperature') }}°F — door ajar or failing?"
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+          critical: false
+          title: "📈 {{ n }} steadily warming"
+          message: "{{ n }} is warming steadily, now {{ states(t) }}°F — door ajar or failing?"
 
-  # ===================== GARAGE REFRIGERATOR (channel A) =====================
-  - id: frzmon_garage_fridge_warm_warn
-    alias: "Freezer monitor — garage fridge warm (warn)"
-    trigger:
-      - platform: numeric_state
-        entity_id: sensor.garage_fridge_temperature
-        above: 40
-        for: { minutes: 10 }
-    action:
-      - action: notify.mobile_app_chriss_iphone
-        data:
-          title: "⚠️ Garage fridge warming"
-          message: "Garage fridge is {{ trigger.to_state.state }}°F (>40) for 10 min."
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-      - action: notify.mobile_app_pixel_9_pro_xl
-        data:
-          title: "⚠️ Garage fridge warming"
-          message: "Garage fridge is {{ trigger.to_state.state }}°F (>40) for 10 min."
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-
-  - id: frzmon_garage_fridge_warm_urgent
-    alias: "Freezer monitor — garage fridge warm (URGENT)"
-    trigger:
-      - platform: numeric_state
-        entity_id: sensor.garage_fridge_temperature
-        above: 45
-        for: { minutes: 10 }
-    action:
-      - action: notify.mobile_app_chriss_iphone
-        data:
-          title: "🚨 Garage fridge FAILING"
-          message: "Garage fridge is {{ trigger.to_state.state }}°F (>45) for 10 min — check it."
-          data:
-            channel: Critical Home Alerts
-            importance: high
-            priority: high
-            ttl: 0
-            push: { interruption-level: time-sensitive }
-      - action: notify.mobile_app_pixel_9_pro_xl
-        data:
-          title: "🚨 Garage fridge FAILING"
-          message: "Garage fridge is {{ trigger.to_state.state }}°F (>45) for 10 min — check it."
-          data: { channel: Critical Home Alerts, importance: high, priority: high, ttl: 0 }
-
-  - id: frzmon_garage_fridge_rising
-    alias: "Freezer monitor — garage fridge steadily warming (door ajar?)"
-    # Fridge-class: sustained ~8°F/hr rise while still below the 40°F warn line.
-    trigger:
-      - platform: state
-        entity_id: binary_sensor.garage_fridge_rising
-        to: "on"
-        for: { minutes: 20 }
-    condition:
-      - condition: numeric_state
-        entity_id: sensor.garage_fridge_temperature
-        below: 40
-    action:
-      - action: notify.mobile_app_chriss_iphone
-        data:
-          title: "📈 Garage fridge steadily warming"
-          message: "Rising ~8°F/hr for 45+ min, now {{ states('sensor.garage_fridge_temperature') }}°F — door ajar or failing?"
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-      - action: notify.mobile_app_pixel_9_pro_xl
-        data:
-          title: "📈 Garage fridge steadily warming"
-          message: "Rising ~8°F/hr for 45+ min, now {{ states('sensor.garage_fridge_temperature') }}°F — door ajar or failing?"
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-
-  # ===================== KITCHEN REFRIGERATOR (channel A) =====================
-  - id: frzmon_kitchen_fridge_warm_warn
-    alias: "Freezer monitor — kitchen fridge warm (warn)"
-    trigger:
-      - platform: numeric_state
-        entity_id: sensor.kitchen_fridge_temperature
-        above: 40
-        for: { minutes: 10 }
-    action:
-      - action: notify.mobile_app_chriss_iphone
-        data:
-          title: "⚠️ Kitchen fridge warming"
-          message: "Kitchen fridge is {{ trigger.to_state.state }}°F (>40) for 10 min."
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-      - action: notify.mobile_app_pixel_9_pro_xl
-        data:
-          title: "⚠️ Kitchen fridge warming"
-          message: "Kitchen fridge is {{ trigger.to_state.state }}°F (>40) for 10 min."
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-
-  - id: frzmon_kitchen_fridge_warm_urgent
-    alias: "Freezer monitor — kitchen fridge warm (URGENT)"
-    trigger:
-      - platform: numeric_state
-        entity_id: sensor.kitchen_fridge_temperature
-        above: 45
-        for: { minutes: 10 }
-    action:
-      - action: notify.mobile_app_chriss_iphone
-        data:
-          title: "🚨 Kitchen fridge FAILING"
-          message: "Kitchen fridge is {{ trigger.to_state.state }}°F (>45) for 10 min — check it."
-          data:
-            channel: Critical Home Alerts
-            importance: high
-            priority: high
-            ttl: 0
-            push: { interruption-level: time-sensitive }
-      - action: notify.mobile_app_pixel_9_pro_xl
-        data:
-          title: "🚨 Kitchen fridge FAILING"
-          message: "Kitchen fridge is {{ trigger.to_state.state }}°F (>45) for 10 min — check it."
-          data: { channel: Critical Home Alerts, importance: high, priority: high, ttl: 0 }
-
-  - id: frzmon_kitchen_fridge_rising
-    alias: "Freezer monitor — kitchen fridge steadily warming (door ajar?)"
-    # Fridge-class: sustained ~8°F/hr rise while still below the 40°F warn line.
-    trigger:
-      - platform: state
-        entity_id: binary_sensor.kitchen_fridge_rising
-        to: "on"
-        for: { minutes: 20 }
-    condition:
-      - condition: numeric_state
-        entity_id: sensor.kitchen_fridge_temperature
-        below: 40
-    action:
-      - action: notify.mobile_app_chriss_iphone
-        data:
-          title: "📈 Kitchen fridge steadily warming"
-          message: "Rising ~8°F/hr for 45+ min, now {{ states('sensor.kitchen_fridge_temperature') }}°F — door ajar or failing?"
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-      - action: notify.mobile_app_pixel_9_pro_xl
-        data:
-          title: "📈 Kitchen fridge steadily warming"
-          message: "Rising ~8°F/hr for 45+ min, now {{ states('sensor.kitchen_fridge_temperature') }}°F — door ajar or failing?"
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-
-  # ============= GARAGE FRIDGE-FREEZER (606 id 174, combo compartment) =============
-  # Settled band 2026-07-16 (recent 6h): min -0.6 / max 3.6 / mean 1.4°F, stdev 1.15.
-  # warn 10°F is 6.4°F above the observed peak (0% of settled samples exceed it);
-  # urgent 15°F is the food-safety escalation. Fridge-class rising detector by stdev.
-  - id: frzmon_garage_fridge_freezer_warm_warn
-    alias: "Freezer monitor — garage fridge-freezer warm (warn)"
-    trigger:
-      - platform: numeric_state
-        entity_id: sensor.garage_fridge_freezer_temperature
-        above: 10
-        for: { minutes: 20 }
-    action:
-      - action: notify.mobile_app_chriss_iphone
-        data:
-          title: "⚠️ Garage fridge-freezer warming"
-          message: "Garage fridge-freezer is {{ trigger.to_state.state }}°F (>10) for 20 min."
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-      - action: notify.mobile_app_pixel_9_pro_xl
-        data:
-          title: "⚠️ Garage fridge-freezer warming"
-          message: "Garage fridge-freezer is {{ trigger.to_state.state }}°F (>10) for 20 min."
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-
-  - id: frzmon_garage_fridge_freezer_warm_urgent
-    alias: "Freezer monitor — garage fridge-freezer warm (URGENT)"
-    trigger:
-      - platform: numeric_state
-        entity_id: sensor.garage_fridge_freezer_temperature
-        above: 15
-        for: { minutes: 10 }
-    action:
-      - action: notify.mobile_app_chriss_iphone
-        data:
-          title: "🚨 Garage fridge-freezer FAILING"
-          message: "Garage fridge-freezer is {{ trigger.to_state.state }}°F (>15) for 10 min — check it."
-          data:
-            channel: Critical Home Alerts
-            importance: high
-            priority: high
-            ttl: 0
-            push: { interruption-level: time-sensitive }
-      - action: notify.mobile_app_pixel_9_pro_xl
-        data:
-          title: "🚨 Garage fridge-freezer FAILING"
-          message: "Garage fridge-freezer is {{ trigger.to_state.state }}°F (>15) for 10 min — check it."
-          data: { channel: Critical Home Alerts, importance: high, priority: high, ttl: 0 }
-
-  - id: frzmon_garage_fridge_freezer_rising
-    alias: "Freezer monitor — garage fridge-freezer steadily warming (door ajar?)"
-    # Fridge-class: sustained ~8°F/hr rise while still below the 10°F warn line.
-    trigger:
-      - platform: state
-        entity_id: binary_sensor.garage_fridge_freezer_rising
-        to: "on"
-        for: { minutes: 20 }
-    condition:
-      - condition: numeric_state
-        entity_id: sensor.garage_fridge_freezer_temperature
-        below: 10
-    action:
-      - action: notify.mobile_app_chriss_iphone
-        data:
-          title: "📈 Garage fridge-freezer steadily warming"
-          message: "Rising ~8°F/hr for 45+ min, now {{ states('sensor.garage_fridge_freezer_temperature') }}°F — door ajar or failing?"
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-      - action: notify.mobile_app_pixel_9_pro_xl
-        data:
-          title: "📈 Garage fridge-freezer steadily warming"
-          message: "Rising ~8°F/hr for 45+ min, now {{ states('sensor.garage_fridge_freezer_temperature') }}°F — door ajar or failing?"
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-
-  # ===================== OUTDOOR KITCHEN FRIDGE (Acurite-00276rm probe) =====================
-  # Standard fridge food-safety thresholds (warn >40 / urgent >45), same as the
-  # kitchen & garage fridges — these are not baseline-derived, they're the
-  # food-safety line, so they hold regardless of this unit's settled band.
-  # NOTE: all three ship initial_state:false (loaded DISABLED). During pulldown
-  # from ~74°F ambient the probe sits above the 40°F warn line, which would trip a
-  # false warn+FAILING pair (the documented cooldown gotcha). ARM them only once
-  # the probe is holding below 40°F for 2+ reads:  automation.turn_on on
-  #   frzmon_outdoor_kitchen_fridge_warm_warn / _warm_urgent / _rising.
-  - id: frzmon_outdoor_kitchen_fridge_warm_warn
-    alias: "Freezer monitor — outdoor kitchen fridge warm (warn)"
-    initial_state: false
-    trigger:
-      - platform: numeric_state
-        entity_id: sensor.outdoor_kitchen_fridge_temperature
-        above: 40
-        for: { minutes: 10 }
-    action:
-      - action: notify.mobile_app_chriss_iphone
-        data:
-          title: "⚠️ Outdoor kitchen fridge warming"
-          message: "Outdoor kitchen fridge is {{ trigger.to_state.state }}°F (>40) for 10 min."
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-      - action: notify.mobile_app_pixel_9_pro_xl
-        data:
-          title: "⚠️ Outdoor kitchen fridge warming"
-          message: "Outdoor kitchen fridge is {{ trigger.to_state.state }}°F (>40) for 10 min."
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-
-  - id: frzmon_outdoor_kitchen_fridge_warm_urgent
-    alias: "Freezer monitor — outdoor kitchen fridge warm (URGENT)"
-    initial_state: false
-    trigger:
-      - platform: numeric_state
-        entity_id: sensor.outdoor_kitchen_fridge_temperature
-        above: 45
-        for: { minutes: 10 }
-    action:
-      - action: notify.mobile_app_chriss_iphone
-        data:
-          title: "🚨 Outdoor kitchen fridge FAILING"
-          message: "Outdoor kitchen fridge is {{ trigger.to_state.state }}°F (>45) for 10 min — check it."
-          data:
-            channel: Critical Home Alerts
-            importance: high
-            priority: high
-            ttl: 0
-            push: { interruption-level: time-sensitive }
-      - action: notify.mobile_app_pixel_9_pro_xl
-        data:
-          title: "🚨 Outdoor kitchen fridge FAILING"
-          message: "Outdoor kitchen fridge is {{ trigger.to_state.state }}°F (>45) for 10 min — check it."
-          data: { channel: Critical Home Alerts, importance: high, priority: high, ttl: 0 }
-
-  - id: frzmon_outdoor_kitchen_fridge_rising
-    alias: "Freezer monitor — outdoor kitchen fridge steadily warming (door ajar?)"
-    initial_state: false
-    # Fridge-class: sustained ~8°F/hr rise while still below the 40°F warn line.
-    trigger:
-      - platform: state
-        entity_id: binary_sensor.outdoor_kitchen_fridge_rising
-        to: "on"
-        for: { minutes: 20 }
-    condition:
-      - condition: numeric_state
-        entity_id: sensor.outdoor_kitchen_fridge_temperature
-        below: 40
-    action:
-      - action: notify.mobile_app_chriss_iphone
-        data:
-          title: "📈 Outdoor kitchen fridge steadily warming"
-          message: "Rising ~8°F/hr for 45+ min, now {{ states('sensor.outdoor_kitchen_fridge_temperature') }}°F — door ajar or failing?"
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-      - action: notify.mobile_app_pixel_9_pro_xl
-        data:
-          title: "📈 Outdoor kitchen fridge steadily warming"
-          message: "Rising ~8°F/hr for 45+ min, now {{ states('sensor.outdoor_kitchen_fridge_temperature') }}°F — door ajar or failing?"
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-
-  # ===================== OFFLINE (no reading ~10 min) =====================
+  # ===================== OFFLINE (no reading) =====================
+  # Outdoor kitchen fridge DROPPED from this list until the ESPHome unit lands —
+  # its 433 link is knowingly marginal (temp alerts already disabled), so offline-
+  # only alerts from it were pure noise (~15/27 fires). `for` widened 1m -> 15m to
+  # ride out brief reception gaps; a genuinely dead sensor still flags after ~25m.
+  # Tower/B (garage chest freezer) stays IN — its recent multi-hour dropouts are a
+  # real "sensor is failing / out of range" signal, not noise to suppress.
   - id: frzmon_sensor_offline
     alias: "Freezer monitor — sensor offline"
+    mode: parallel
+    max: 10
     trigger:
       - platform: state
         entity_id:
@@ -643,24 +394,20 @@ automation:
           - sensor.garage_fridge_temperature
           - sensor.kitchen_fridge_temperature
           - sensor.garage_fridge_freezer_temperature
-          - sensor.outdoor_kitchen_fridge_temperature
         to: "unavailable"
-        for: { minutes: 1 }
+        for: { minutes: 15 }
     action:
-      - action: notify.mobile_app_chriss_iphone
+      - action: script.frzmon_notify
         data:
+          critical: false
           title: "📡 Fridge/freezer sensor offline"
-          message: "{{ trigger.to_state.attributes.friendly_name | default(trigger.entity_id) }} — no reading for ~10 min (battery/range?)."
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
-      - action: notify.mobile_app_pixel_9_pro_xl
-        data:
-          title: "📡 Fridge/freezer sensor offline"
-          message: "{{ trigger.to_state.attributes.friendly_name | default(trigger.entity_id) }} — no reading for ~10 min (battery/range?)."
-          data: { channel: Home Alerts, importance: high, priority: high, ttl: 0 }
+          message: "{{ trigger.to_state.attributes.friendly_name | default(trigger.entity_id) }} — no reading for ~25 min (battery/range?)."
 
   # ===================== LOW BATTERY =====================
   - id: frzmon_sensor_low_battery
     alias: "Freezer monitor — low battery"
+    mode: parallel
+    max: 10
     trigger:
       - platform: state
         entity_id:
@@ -672,22 +419,66 @@ automation:
         to: "on"
         for: { minutes: 5 }
     action:
-      - action: notify.mobile_app_chriss_iphone
+      - action: script.frzmon_notify
         data:
+          importance: default
           title: "🔋 Fridge/freezer sensor low battery"
           message: "{{ trigger.to_state.attributes.friendly_name | default(trigger.entity_id) }} reports low battery — swap in lithium AAs."
-          data: { channel: Home Alerts, importance: default, priority: default, ttl: 0 }
-      - action: notify.mobile_app_pixel_9_pro_xl
-        data:
-          title: "🔋 Fridge/freezer sensor low battery"
-          message: "{{ trigger.to_state.attributes.friendly_name | default(trigger.entity_id) }} reports low battery — swap in lithium AAs."
-          data: { channel: Home Alerts, importance: default, priority: default, ttl: 0 }
 
 # ---------------------------------------------------------------------------
-# Orphaned entities (removed from YAML, will linger as unavailable/restored in
-# the registry until deleted in the HA UI: Settings → Devices & Services →
-# Entities):
-#   - sensor.kitchen_fridge_humidity        (606 has no humidity)
-# (The outdoor_kitchen_fridge_* reserved slots are now BOUND to the 00276rm block
-#  above via their frzmon_outdoor_kitchen_fridge_* unique_ids — no longer orphaned.)
+# Shared notifier — sends to BOTH phones from one place (this replaced the
+# duplicated iPhone+Pixel action pair in every one of the former 17 automations).
+#   critical=true  -> "Critical Home Alerts" channel + iOS time-sensitive push
+#   critical=false -> "Home Alerts" channel
+#   importance      -> Android channel importance; defaults high, low-battery
+#                      passes 'default' to stay a quiet/routine alert.
 # ---------------------------------------------------------------------------
+script:
+  frzmon_notify:
+    alias: "Freezer monitor — notify both phones"
+    mode: parallel
+    max: 20
+    fields:
+      title:
+        description: "Notification title"
+        example: "⚠️ Garage fridge warming"
+      message:
+        description: "Notification body"
+        example: "Garage fridge is 42°F (sustained over 42°F)."
+      critical:
+        description: "Route to Critical Home Alerts + iOS time-sensitive"
+        default: false
+      importance:
+        description: "Android importance: high or default"
+        default: high
+    sequence:
+      # Defaults are applied HERE with Jinja `default()`, NOT via the `fields:`
+      # `default:` keys above — HA does not reliably inject field defaults as
+      # template variables, so an omitted `importance`/`critical` would render
+      # empty and Android rejects an empty channel-importance (verified 2026-07-23).
+      - variables:
+          crit: "{{ critical | default(false) | bool }}"
+          imp: "{{ importance | default('high') }}"
+          chan: "{{ 'Critical Home Alerts' if crit else 'Home Alerts' }}"
+          prio: "{{ 'high' if imp == 'high' else 'default' }}"
+      - parallel:
+          - action: notify.mobile_app_chriss_iphone
+            data:
+              title: "{{ title }}"
+              message: "{{ message }}"
+              data:
+                channel: "{{ chan }}"
+                importance: "{{ imp }}"
+                priority: "{{ prio }}"
+                ttl: 0
+                push:
+                  interruption-level: "{{ 'time-sensitive' if crit else 'active' }}"
+          - action: notify.mobile_app_pixel_9_pro_xl
+            data:
+              title: "{{ title }}"
+              message: "{{ message }}"
+              data:
+                channel: "{{ chan }}"
+                importance: "{{ imp }}"
+                priority: "{{ prio }}"
+                ttl: 0
