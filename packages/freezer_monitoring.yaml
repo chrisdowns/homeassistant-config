@@ -130,44 +130,10 @@ mqtt:
       state_class: measurement
       expire_after: 600
 
-    # ==== Outdoor kitchen fridge : Acurite-00276rm (id 5978) + 06011RM probe ====
-    # rtl_433 decodes this monitor as model "Acurite-00276rm" (NOT 00275rm as the
-    # earlier plan guessed — verified off the live MQTT stream 2026-07-18). The
-    # transmitter body stays OUTSIDE the metal fridge; the plug-in PROBE on a lead
-    # runs through the gasket into the cold space and its reading comes out in
-    # `temperature_1_C` (the onboard body sensor is `temperature_C` = ambient).
-    # Unique model topic → no channel switch and no topic-sharing sibling, so a
-    # simple field-presence guard is enough. Deliberately NOT gated on id:5978 —
-    # unlike the stable-id 606s (which SHARE a topic and MUST be split by id), this
-    # model has its own topic, and whether its id survives a battery swap is unknown;
-    # gating on an id that might rotate would silently kill the sensor after a swap.
-    # expire_after 900 is PROVISIONAL — this spot is a known marginal 433 link, so
-    # widen it if offline false-flaps, tighten toward 600 if reception proves solid.
-    - name: "Outdoor Kitchen Fridge Temperature"
-      unique_id: frzmon_outdoor_kitchen_fridge_temp   # reserved slot → binds sensor.outdoor_kitchen_fridge_temperature
-      state_topic: "rtl_433/devices/Acurite-00276rm"
-      value_template: >-
-        {% if value_json.temperature_1_C is defined %}
-          {{ (value_json.temperature_1_C | float * 9 / 5 + 32) | round(1) }}
-        {% else %}{{ this.state | default('unknown', true) }}{% endif %}
-      unit_of_measurement: "°F"
-      device_class: temperature
-      state_class: measurement
-      expire_after: 900
-    # Onboard body sensor = outdoor AMBIENT. Useful context for an outdoor unit:
-    # tells a hot-day rise apart from an actual fridge failure. (Not in a reserved
-    # slot — new entity sensor.outdoor_kitchen_fridge_ambient.)
-    - name: "Outdoor Kitchen Fridge Ambient"
-      unique_id: frzmon_outdoor_kitchen_fridge_ambient
-      state_topic: "rtl_433/devices/Acurite-00276rm"
-      value_template: >-
-        {% if value_json.temperature_C is defined %}
-          {{ (value_json.temperature_C | float * 9 / 5 + 32) | round(1) }}
-        {% else %}{{ this.state | default('unknown', true) }}{% endif %}
-      unit_of_measurement: "°F"
-      device_class: temperature
-      state_class: measurement
-      expire_after: 900
+    # ==== Outdoor kitchen fridge ==== 00276rm 433 MQTT sensors RETIRED
+    # 2026-07-23: replaced by a local ESPHome ATOM S3 Lite + DS18B20 probe
+    # (native HA API, "Outdoor Kitchen Fridge" @ 192.168.224.22), which now
+    # owns sensor.outdoor_kitchen_fridge_temperature. 00276rm = garage spare.
 
   binary_sensor:
     - name: "Garage Freezer Sensor Battery"
@@ -208,15 +174,7 @@ mqtt:
       payload_off: "1"
       device_class: battery
       expire_after: 600
-    # Outdoor kitchen fridge monitor (Acurite-00276rm) — own topic, simple guard.
-    - name: "Outdoor Kitchen Fridge Sensor Battery"
-      unique_id: frzmon_outdoor_kitchen_fridge_batt   # reserved slot → binds binary_sensor.outdoor_kitchen_fridge_sensor_battery
-      state_topic: "rtl_433/devices/Acurite-00276rm"
-      value_template: "{{ value_json.battery_ok | int }}"
-      payload_on: "0"        # battery_ok = 0 -> low
-      payload_off: "1"
-      device_class: battery
-      expire_after: 900
+    # (Outdoor kitchen fridge battery sensor removed 2026-07-23 — ESPHome unit is USB-powered.)
 
 # ---------------------------------------------------------------------------
 # Rate-of-rise detectors (door-ajar / slow-failure early warning) — STANDARD on
@@ -318,12 +276,18 @@ automation:
       - { platform: numeric_state, id: urgent, entity_id: sensor.kitchen_fridge_temperature,        above: 45, for: { minutes: 10 } }
       - { platform: numeric_state, id: warn,   entity_id: sensor.garage_fridge_freezer_temperature, above: 10, for: { minutes: 45 } }
       - { platform: numeric_state, id: urgent, entity_id: sensor.garage_fridge_freezer_temperature, above: 15, for: { minutes: 35 } }
+      # Outdoor kitchen fridge (ESPHome probe) — baseline ~45F, transparent door in
+      # direct afternoon sun. INITIAL warn 50 / urgent 57 (2026-07-23, per Chris);
+      # nightly range-check tunes these off the observed daily band.
+      - { platform: numeric_state, id: warn,   entity_id: sensor.outdoor_kitchen_fridge_temperature, above: 50, for: { minutes: 30 } }
+      - { platform: numeric_state, id: urgent, entity_id: sensor.outdoor_kitchen_fridge_temperature, above: 57, for: { minutes: 20 } }
     variables:
       names:
         sensor.garage_freezer_temperature: "Garage freezer"
         sensor.garage_fridge_temperature: "Garage fridge"
         sensor.kitchen_fridge_temperature: "Kitchen fridge"
         sensor.garage_fridge_freezer_temperature: "Garage fridge-freezer"
+        sensor.outdoor_kitchen_fridge_temperature: "Outdoor kitchen fridge"
     action:
       - variables:
           n: "{{ names[trigger.entity_id] | default(trigger.entity_id) }}"
@@ -347,22 +311,26 @@ automation:
       - { platform: state, entity_id: binary_sensor.garage_fridge_rising,         to: "on", for: { minutes: 20 } }
       - { platform: state, entity_id: binary_sensor.kitchen_fridge_rising,        to: "on", for: { minutes: 20 } }
       - { platform: state, entity_id: binary_sensor.garage_fridge_freezer_rising, to: "on", for: { minutes: 20 } }
+      - { platform: state, entity_id: binary_sensor.outdoor_kitchen_fridge_rising,   to: "on", for: { minutes: 20 } }
     variables:
       temp_of:
         binary_sensor.garage_freezer_rising: sensor.garage_freezer_temperature
         binary_sensor.garage_fridge_rising: sensor.garage_fridge_temperature
         binary_sensor.kitchen_fridge_rising: sensor.kitchen_fridge_temperature
         binary_sensor.garage_fridge_freezer_rising: sensor.garage_fridge_freezer_temperature
+        binary_sensor.outdoor_kitchen_fridge_rising: sensor.outdoor_kitchen_fridge_temperature
       warn_of:
         binary_sensor.garage_freezer_rising: -5
         binary_sensor.garage_fridge_rising: 40
         binary_sensor.kitchen_fridge_rising: 40
         binary_sensor.garage_fridge_freezer_rising: 10
+        binary_sensor.outdoor_kitchen_fridge_rising: 50
       names:
         binary_sensor.garage_freezer_rising: "Garage freezer"
         binary_sensor.garage_fridge_rising: "Garage fridge"
         binary_sensor.kitchen_fridge_rising: "Kitchen fridge"
         binary_sensor.garage_fridge_freezer_rising: "Garage fridge-freezer"
+        binary_sensor.outdoor_kitchen_fridge_rising: "Outdoor kitchen fridge"
     condition:
       - condition: template
         value_template: "{{ states(temp_of[trigger.entity_id]) | float(999) < (warn_of[trigger.entity_id] | float) }}"
@@ -415,7 +383,6 @@ automation:
           - binary_sensor.garage_fridge_sensor_battery
           - binary_sensor.kitchen_fridge_sensor_battery
           - binary_sensor.garage_fridge_freezer_sensor_battery
-          - binary_sensor.outdoor_kitchen_fridge_sensor_battery
         to: "on"
         for: { minutes: 5 }
     action:
