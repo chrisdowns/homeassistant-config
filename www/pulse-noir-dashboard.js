@@ -72,6 +72,10 @@
   function tempMeta(id, nm) {
     var n = (id + ' ' + nm).toLowerCase();
     if (n.indexOf('freezer') > -1) return { grp: 'Cold chain', lo: null, hi: 10 };
+    // Outdoor kitchen fridge (ESPHome probe): transparent door in direct afternoon
+    // sun → ~45F baseline is normal; band hi tracks the warn line (50), not 42.
+    if (n.indexOf('outdoor') > -1 && n.indexOf('fridge') > -1 && n.indexOf('ambient') === -1)
+      return { grp: 'Cold chain', lo: 30, hi: 50 };
     if ((n.indexOf('fridge') > -1 || n.indexOf('refriger') > -1) && n.indexOf('ambient') === -1)
       return { grp: 'Cold chain', lo: 30, hi: 42 };
     return { grp: 'Climate', lo: 60, hi: 84 };
@@ -862,5 +866,5 @@
   }
 
   // eslint-disable-next-line no-console
-  console.info('%c Home Guardian — Pulse Noir %c loaded (v4 · sensor-detail) ', 'background:#0C0F13;color:#2ED27C;font-weight:700', '');
+  console.info('%c Home Guardian — Pulse Noir %c loaded (v4 · sensor-detail · outdoor-esphome)', 'background:#0C0F13;color:#2ED27C;font-weight:700', '');
 })();
