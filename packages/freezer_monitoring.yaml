@@ -345,12 +345,13 @@ automation:
           message: "{{ n }} is warming steadily, now {{ states(t) }}°F — door ajar or failing?"
 
   # ===================== OFFLINE (no reading) =====================
-  # Outdoor kitchen fridge DROPPED from this list until the ESPHome unit lands —
-  # its 433 link is knowingly marginal (temp alerts already disabled), so offline-
-  # only alerts from it were pure noise (~15/27 fires). `for` widened 1m -> 15m to
-  # ride out brief reception gaps; a genuinely dead sensor still flags after ~25m.
-  # Tower/B (garage chest freezer) stays IN — its recent multi-hour dropouts are a
-  # real "sensor is failing / out of range" signal, not noise to suppress.
+  # `for` widened 1m -> 15m to ride out brief WiFi/reception gaps; a genuinely dead
+  # sensor still flags after ~25m. Tower/B (garage chest freezer) stays IN — its
+  # multi-hour dropouts are a real "failing / out of range" signal, not noise.
+  # Outdoor kitchen fridge RE-ADDED 2026-07-23: now on the reliable ESPHome/WiFi
+  # unit (was dropped while on the marginal 433 link). This offline alert is the
+  # ONLY silent-death guard for it — the ESPHome unit is USB-powered so it has no
+  # battery alert, and unavailable temp can't fire the numeric/rising triggers.
   - id: frzmon_sensor_offline
     alias: "Freezer monitor — sensor offline"
     mode: parallel
@@ -362,6 +363,7 @@ automation:
           - sensor.garage_fridge_temperature
           - sensor.kitchen_fridge_temperature
           - sensor.garage_fridge_freezer_temperature
+          - sensor.outdoor_kitchen_fridge_temperature
         to: "unavailable"
         for: { minutes: 15 }
     action:
