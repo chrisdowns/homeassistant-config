@@ -264,6 +264,10 @@
       var s = states[id];
       if (!s || !s.attributes || s.attributes.device_class !== 'temperature') return;
       if (id.indexOf('sensor.waterguru') === 0) return;
+      // Derived statistics sensors (e.g. outdoor_kitchen_fridge_3h_mean) inherit
+      // device_class:temperature from their source but are NOT physical probes —
+      // exclude them so they don't duplicate the real sensor's tile.
+      if (/_(mean|median|average|avg|min|max|stdev)$/.test(id)) return;
       var fn = s.attributes.friendly_name || titleize(id.replace(/^sensor\./, ''));
       if (fn.indexOf('Keen Home Inc SV0') === 0) return; // anonymous duplicate vents
       var nm = stripTemp(fn); nm = TEMP_RENAME[nm] || nm;
