@@ -177,6 +177,26 @@ mqtt:
     # (Outdoor kitchen fridge battery sensor removed 2026-07-23 — ESPHome unit is USB-powered.)
 
 # ---------------------------------------------------------------------------
+# Derived sensors — 3-hour rolling mean of the outdoor kitchen fridge (the
+# "software glycol bottle", 2026-07-24). The ESPHome probe reads AIR, so the raw
+# reading swings ~11°F with every compressor cycle (33↔44°F, 45-90 min). A 3h mean
+# is immune to that cycling by construction and exposes a sustained plateau / slow
+# drift that neither the absolute >50°F warn nor the rate detector can see — a
+# failure that stalls in the 44-49°F band never crosses 50 and has no lasting
+# gradient, yet the air is already past the 40°F USDA line at every cycle peak.
+# ---------------------------------------------------------------------------
+sensor:
+  - platform: statistics
+    name: "Outdoor Kitchen Fridge 3h Mean"
+    unique_id: frzmon_outdoor_kitchen_fridge_mean_3h
+    entity_id: sensor.outdoor_kitchen_fridge_temperature
+    state_characteristic: mean
+    max_age:
+      hours: 3
+    sampling_size: 500        # 3h @ 30s ≈ 360 samples; headroom so max_age governs the window
+    precision: 1
+
+# ---------------------------------------------------------------------------
 # Rate-of-rise detectors (door-ajar / slow-failure early warning) — STANDARD on
 # every temp sensor. A sustained upward slope catches a cracked door or dying
 # unit while the box is still in-range, long before the absolute threshold.
@@ -227,10 +247,11 @@ binary_sensor:
         min_gradient: 0.0035
         min_samples: 4
         max_samples: 60
-      outdoor_kitchen_fridge_rising:    # fridge-class: 8 F/hr over 45 min (probe is inside the box, so outdoor ambient swings don't reach it)
-        # WATCH: needs >=4 samples in the 45-min window; if the marginal link
-        # delivers points too sparsely this may never populate — reassess once we
-        # see real reception density. Re-tune off a settled baseline after a few days.
+      outdoor_kitchen_fridge_rising:    # DASHBOARD-ONLY as of 2026-07-24 (no longer alerts)
+        # Rate alerting for this unit was removed — see the note in frzmon_rising_alerts.
+        # The ESPHome probe reads air, so this trend rides the ~11°F compressor cycle and
+        # can't distinguish a door-ajar from a normal off-cycle. Sensor retained purely
+        # for visibility on the dashboard; nothing triggers on it.
         friendly_name: "Outdoor Kitchen Fridge Rising"
         entity_id: sensor.outdoor_kitchen_fridge_temperature
         sample_duration: 2700
@@ -296,7 +317,7 @@ automation:
         data:
           critical: "{{ crit }}"
           title: "{{ ('🚨 ' ~ n ~ ' FAILING') if crit else ('⚠️ ' ~ n ~ ' warming') }}"
-          message: "{{ n }} is {{ trigger.to_state.state }}°F (sustained over {{ trigger.above }}°F){{ ' — check it now' if crit else '' }}."
+          message: "{{ n }} is {{ trigger.to_state.state | float | round(1) }}°F (sustained over {{ trigger.above }}°F){{ ' — check it now' if crit else '' }}."
 
   # ---- Rate-of-rise (door-ajar / slow-failure early warning) — all units, one automation ----
   # Each *_rising trend binary_sensor fires this; the condition gates it BELOW that
@@ -311,26 +332,28 @@ automation:
       - { platform: state, entity_id: binary_sensor.garage_fridge_rising,         to: "on", for: { minutes: 20 } }
       - { platform: state, entity_id: binary_sensor.kitchen_fridge_rising,        to: "on", for: { minutes: 20 } }
       - { platform: state, entity_id: binary_sensor.garage_fridge_freezer_rising, to: "on", for: { minutes: 20 } }
-      - { platform: state, entity_id: binary_sensor.outdoor_kitchen_fridge_rising,   to: "on", for: { minutes: 20 } }
+      # Outdoor kitchen fridge DROPPED from rate detection 2026-07-24: the probe reads
+      # AIR, so its normal compressor cycle swings ~11°F (33↔44°F) every 45-90 min —
+      # each warming limb (~12°F/hr for ~45 min) is indistinguishable from a door-ajar,
+      # firing ~7-8 false "steadily warming" pushes/day. Rate+time can't separate the
+      # two for this unit. Covered instead by the absolute >50°F warn and the new 3h-mean
+      # plateau alert (frzmon_outdoor_plateau). Trend sensor kept for dashboard only.
     variables:
       temp_of:
         binary_sensor.garage_freezer_rising: sensor.garage_freezer_temperature
         binary_sensor.garage_fridge_rising: sensor.garage_fridge_temperature
         binary_sensor.kitchen_fridge_rising: sensor.kitchen_fridge_temperature
         binary_sensor.garage_fridge_freezer_rising: sensor.garage_fridge_freezer_temperature
-        binary_sensor.outdoor_kitchen_fridge_rising: sensor.outdoor_kitchen_fridge_temperature
       warn_of:
         binary_sensor.garage_freezer_rising: -5
         binary_sensor.garage_fridge_rising: 40
         binary_sensor.kitchen_fridge_rising: 40
         binary_sensor.garage_fridge_freezer_rising: 10
-        binary_sensor.outdoor_kitchen_fridge_rising: 50
       names:
         binary_sensor.garage_freezer_rising: "Garage freezer"
         binary_sensor.garage_fridge_rising: "Garage fridge"
         binary_sensor.kitchen_fridge_rising: "Kitchen fridge"
         binary_sensor.garage_fridge_freezer_rising: "Garage fridge-freezer"
-        binary_sensor.outdoor_kitchen_fridge_rising: "Outdoor kitchen fridge"
     condition:
       - condition: template
         value_template: "{{ states(temp_of[trigger.entity_id]) | float(999) < (warn_of[trigger.entity_id] | float) }}"
@@ -342,7 +365,29 @@ automation:
         data:
           critical: false
           title: "📈 {{ n }} steadily warming"
-          message: "{{ n }} is warming steadily, now {{ states(t) }}°F — door ajar or failing?"
+          message: "{{ n }} is warming steadily, now {{ states(t) | float | round(1) }}°F — door ajar or failing?"
+
+  # ---- Outdoor kitchen fridge: sustained-plateau / slow-drift warn (2026-07-24) ----
+  # Covers the gap the absolute >50°F warn and the (removed) rate detector both miss:
+  # a plateau in the 44-49°F band. Runs off the 3h mean so normal compressor cycling
+  # can't trip it. Threshold 44°F is PROVISIONAL / low-confidence — observed normal 3h
+  # mean is ~40°F (band peaks ~44°F). The nightly range-check cron + a week of settled
+  # data should tune it. CAVEAT: the adoption baseline was logged ~45-47°F (07-23),
+  # which conflicts with today's 33-44°F band — reconcile that before hardening 44/50/57.
+  - id: frzmon_outdoor_plateau
+    alias: "Freezer monitor — outdoor kitchen fridge sustained warm (plateau)"
+    mode: single
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.outdoor_kitchen_fridge_3h_mean
+        above: 44
+        for: { minutes: 30 }
+    action:
+      - action: script.frzmon_notify
+        data:
+          critical: false
+          title: "🌡️ Outdoor kitchen fridge running warm"
+          message: "Outdoor kitchen fridge has averaged {{ states('sensor.outdoor_kitchen_fridge_3h_mean') | float | round(1) }}°F over the last 3h — running warm (possible slow failure or seal issue)."
 
   # ===================== OFFLINE (no reading) =====================
   # `for` widened 1m -> 15m to ride out brief WiFi/reception gaps; a genuinely dead
