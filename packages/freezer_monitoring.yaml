@@ -197,6 +197,65 @@ sensor:
     precision: 1
 
 # ---------------------------------------------------------------------------
+# PER-UNIT LAST-SEEN STAMPS (2026-07-24) — the fix for the shared-topic hole
+# documented at lines 104-107. These fire on the MQTT MESSAGE, so they are
+# immune to two traps that make every other liveness signal lie here:
+#   1. HA's MQTT integration SKIPS the state write when a payload is unchanged
+#      (mqtt/entity.py _message_callback writes only if attrs changed), so a
+#      healthy sensor republishing an identical reading every ~16s leaves
+#      last_reported / last_updated / last_changed FROZEN. Reading a frozen
+#      last_reported as "sensor dead" caused a false alarm on 2026-07-24.
+#   2. expire_after is re-armed by ANY message on the topic — including the
+#      SIBLING 606's — so a single dead 606 never expires.
+# Towers key on TOPIC (channel A/B is stable; device id rotates on battery
+# swap). The two 606s share one topic, so they MUST key on id (126/174) —
+# all four ids verified live on the broker 2026-07-24 20:35Z.
+# now() is tz-aware in HA templates, so this timestamp math is safe.
+# ---------------------------------------------------------------------------
+template:
+  - trigger:
+      - platform: mqtt
+        topic: "rtl_433/devices/Acurite-Tower/B"
+    sensor:
+      - name: "Garage Freezer Last Seen"
+        unique_id: frzmon_garage_freezer_last_seen
+        device_class: timestamp
+        state: "{{ now().isoformat() }}"
+
+  - trigger:
+      - platform: mqtt
+        topic: "rtl_433/devices/Acurite-Tower/A"
+    sensor:
+      - name: "Garage Fridge Last Seen"
+        unique_id: frzmon_garage_fridge_last_seen
+        device_class: timestamp
+        state: "{{ now().isoformat() }}"
+
+  - trigger:
+      - platform: mqtt
+        topic: "rtl_433/devices/Acurite-606TX/1"
+    condition:
+      - condition: template
+        value_template: "{{ trigger.payload_json.id | int(0) == 126 }}"
+    sensor:
+      - name: "Kitchen Fridge Last Seen"
+        unique_id: frzmon_kitchen_fridge_last_seen
+        device_class: timestamp
+        state: "{{ now().isoformat() }}"
+
+  - trigger:
+      - platform: mqtt
+        topic: "rtl_433/devices/Acurite-606TX/1"
+    condition:
+      - condition: template
+        value_template: "{{ trigger.payload_json.id | int(0) == 174 }}"
+    sensor:
+      - name: "Garage Fridge-Freezer Last Seen"
+        unique_id: frzmon_garage_fridge_freezer_last_seen
+        device_class: timestamp
+        state: "{{ now().isoformat() }}"
+
+# ---------------------------------------------------------------------------
 # Rate-of-rise detectors (door-ajar / slow-failure early warning) — STANDARD on
 # every temp sensor. A sustained upward slope catches a cracked door or dying
 # unit while the box is still in-range, long before the absolute threshold.
@@ -271,7 +330,7 @@ automation:
   # Thresholds retuned 2026-07-23 off 7 days of live data — DURATION-based, not
   # amplitude-based, so a slow failure that plateaus at a low temp is still caught
   # while normal auto-defrost humps (narrow, <=27 min wide) are filtered out:
-  #   Garage freezer        warn >-5/20m            urgent >10/10m   (unchanged; quiet)
+  #   Garage freezer        warn >5/30m + >0/2h     urgent >10/10m   (retuned 07-24)
   #   Garage fridge         warn >42/20m + >40/2h   urgent >45/10m
   #     >42 catches a fast rise; >40-for-2h catches a stuck-at-41 drift. Both sit
   #     inside the USDA <=40-for-2h food-safety line. 43°F was actually seen 07-16.
@@ -288,7 +347,17 @@ automation:
     mode: parallel
     max: 20
     trigger:
-      - { platform: numeric_state, id: warn,   entity_id: sensor.garage_freezer_temperature,        above: -5, for: { minutes: 20 } }
+      # RETUNED 2026-07-24 (Chris): the old warn >-5/20m became pure noise after the
+      # unit stepped +10°F on 07-23 14:33Z (the battery-swap morning) — 93.6% of the
+      # following 48h sat above -5 (band min -13.5 / max -1.7 / median -2.2), so warn
+      # fired 3x and re-fired on every restart. Replaced with the SAME two-line shape
+      # proven on the garage fridge (>42/20m + >40/2h) so raising the noisy line does
+      # NOT go fail-deadly: >5/30m catches a fast rise, >0-for-2h catches a slow
+      # failure that plateaus just above the USDA 0°F freezer line. Urgent unchanged.
+      # ⚠️ OPEN: the +10°F step is UNEXPLAINED (probe repositioned during the swap vs
+      # unit genuinely running warmer). Physical check still owed; re-baseline after.
+      - { platform: numeric_state, id: warn,   entity_id: sensor.garage_freezer_temperature,        above: 0,  for: { hours: 2 } }
+      - { platform: numeric_state, id: warn,   entity_id: sensor.garage_freezer_temperature,        above: 5,  for: { minutes: 30 } }
       - { platform: numeric_state, id: urgent, entity_id: sensor.garage_freezer_temperature,        above: 10, for: { minutes: 10 } }
       - { platform: numeric_state, id: warn,   entity_id: sensor.garage_fridge_temperature,         above: 42, for: { minutes: 20 } }
       - { platform: numeric_state, id: warn,   entity_id: sensor.garage_fridge_temperature,         above: 40, for: { hours: 2 } }
@@ -438,6 +507,92 @@ automation:
           importance: default
           title: "🔋 Fridge/freezer sensor low battery"
           message: "{{ trigger.to_state.attributes.friendly_name | default(trigger.entity_id) }} reports low battery — swap in lithium AAs."
+
+  # ===================== PER-UNIT STALENESS SWEEP (2026-07-24) =====================
+  # Restart-proof, per-unit silent-death guard. Closes TWO independent gaps that
+  # frzmon_sensor_offline (above) cannot:
+  #   1. That automation is TRANSITION-ONLY (`to: "unavailable"` + for: 15m). Pending
+  #      `for:` timers do not survive a restart/reload, and HA does not re-fire a
+  #      state trigger against an already-matching state — so a sensor that dies just
+  #      before or during a restart is NEVER reported. This is the identical bug fixed
+  #      in the water-leak watchdog on 2026-07-06 by adding a time sweep; the freezer
+  #      stack never got that treatment. It is also the ONLY silent-death guard for
+  #      the ESPHome outdoor unit (see lines 396-399), so that unit was exposed too.
+  #   2. A single dead 606 never expires at all, because expire_after is re-armed by
+  #      the SIBLING 606's messages on the shared topic (lines 104-107).
+  # Judged off the per-unit *_last_seen stamps, NOT off `unavailable`, and NOT off
+  # last_reported (which FREEZES on identical MQTT payloads — that trap caused a
+  # false "dead sensor" alarm on 2026-07-24). The outdoor unit is ESPHome/native-API,
+  # where an unchanged write DOES advance last_reported, so it uses that instead.
+  # 433 units transmit every ~6-25s, so 25 min is 60+ missed messages — clear of the
+  # known RF burst gaps while still well inside food-safety timescales.
+  - id: frzmon_staleness_sweep
+    alias: "Freezer monitor — per-unit staleness sweep"
+    mode: single
+    trigger:
+      - platform: time_pattern
+        minutes: "/5"
+    variables:
+      max_age_min: 25
+      units:
+        - { name: "Garage freezer",         seen: "sensor.garage_freezer_last_seen",        temp: "sensor.garage_freezer_temperature" }
+        - { name: "Garage fridge",          seen: "sensor.garage_fridge_last_seen",         temp: "sensor.garage_fridge_temperature" }
+        - { name: "Kitchen fridge",         seen: "sensor.kitchen_fridge_last_seen",        temp: "sensor.kitchen_fridge_temperature" }
+        - { name: "Garage fridge-freezer",  seen: "sensor.garage_fridge_freezer_last_seen", temp: "sensor.garage_fridge_freezer_temperature" }
+        # ESPHome/native API — no MQTT topic, so fall back to last_reported (valid here).
+        - { name: "Outdoor kitchen fridge", seen: "",                                       temp: "sensor.outdoor_kitchen_fridge_temperature" }
+      # Trigger-based template sensors do NOT restore across a restart — they start
+      # `unknown` until their first message. A unit that is DEAD at restart time
+      # therefore has no stamp, and (if it is a 606 whose sibling still transmits)
+      # its temp entity is NOT unavailable either — which would re-open the very hole
+      # this sweep exists to close. So a missing stamp counts as STALE, guarded by a
+      # 10-minute boot grace so a healthy fleet (stamps land within ~30s of MQTT
+      # connecting) can't produce a spurious alert right after a restart/reload.
+      # Deliberately fail-LOUD: worst case is one nuisance push, never a silent death.
+      stale: >-
+        {% set ns = namespace(items=[]) %}
+        {% set me = states.automation.freezer_monitor_per_unit_staleness_sweep %}
+        {% set boot_grace = me is none or (now() - me.last_changed).total_seconds() < 600 %}
+        {% for u in units %}
+          {% set t = states(u.temp) %}
+          {% if t in ['unavailable', 'unknown'] %}
+            {% set ns.items = ns.items + [u.name ~ ' (no reading)'] %}
+          {% else %}
+            {% set dt = none %}
+            {% if u.seen %}
+              {% set s = states(u.seen) %}
+              {% if s in ['unknown', 'unavailable'] %}
+                {% if not boot_grace %}
+                  {% set ns.items = ns.items + [u.name ~ ' (no last-seen stamp)'] %}
+                {% endif %}
+              {% else %}
+                {% set dt = s | as_datetime %}
+              {% endif %}
+            {% else %}
+              {% set dt = states[u.temp].last_reported %}
+            {% endif %}
+            {% if dt is not none %}
+              {% set age = ((now() - dt).total_seconds() / 60) | round | int %}
+              {% if age > max_age_min %}
+                {% set ns.items = ns.items + [u.name ~ ' (' ~ age ~ 'm silent)'] %}
+              {% endif %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items | join(', ') }}
+    condition:
+      # `| trim` is deliberate, not decorative: the `stale` template is built from
+      # {% %} control blocks, so it renders with surrounding whitespace. HA does strip
+      # rendered results, but if that ever changed, a bare `| length > 0` would be
+      # TRUE on every sweep and push an empty alert every 5 min. Trim makes it explicit.
+      - condition: template
+        value_template: "{{ stale | trim | length > 0 }}"
+    action:
+      - action: script.frzmon_notify
+        data:
+          critical: false
+          title: "📡 Fridge/freezer sensor silent"
+          message: "No data from: {{ stale }} (>{{ max_age_min }} min silent). Per-unit sweep, runs every 5 min."
 
 # ---------------------------------------------------------------------------
 # Shared notifier — sends to BOTH phones from one place (this replaced the
