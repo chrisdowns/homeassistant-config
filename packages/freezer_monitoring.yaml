@@ -279,6 +279,52 @@ template:
         device_class: timestamp
         state: "{{ now().isoformat() }}"
 
+  # ---- 433 RECEPTION HEALTH (2026-07-27) ----
+  # Worst per-unit gap across all four 433 sensors, in minutes. Healthy is ~0-1 (the
+  # Towers transmit every ~6-16s, the 606s every ~25-31s). This exists to make reception
+  # DEGRADATION visible and trendable BEFORE it becomes an outage, and to serve as the
+  # measurement instrument if the SDR is ever tuned: record this over a few days, change
+  # one rtl_433 setting, compare. Recorded as a measurement so it graphs.
+  # Rendering note: templates containing now() are re-evaluated by HA every minute, which
+  # is exactly the cadence wanted here — no trigger needed.
+  - sensor:
+      - name: "433 Reception Worst Gap"
+        unique_id: frzmon_433_worst_gap
+        unit_of_measurement: "min"
+        state_class: measurement
+        icon: mdi:antenna
+        state: >-
+          {% set stamps = [
+            states('sensor.garage_freezer_last_seen'),
+            states('sensor.garage_fridge_last_seen'),
+            states('sensor.kitchen_fridge_last_seen'),
+            states('sensor.garage_fridge_freezer_last_seen') ] %}
+          {% set ns = namespace(worst=0) %}
+          {% for s in stamps %}
+            {% set dt = s | as_datetime %}
+            {% if dt is not none %}
+              {% set age = (now() - dt).total_seconds() / 60 %}
+              {% if age > ns.worst %}{% set ns.worst = age %}{% endif %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.worst | round(1) }}
+        attributes:
+          worst_unit: >-
+            {% set units = {
+              'Garage freezer': 'sensor.garage_freezer_last_seen',
+              'Garage fridge': 'sensor.garage_fridge_last_seen',
+              'Kitchen fridge': 'sensor.kitchen_fridge_last_seen',
+              'Garage fridge-freezer': 'sensor.garage_fridge_freezer_last_seen' } %}
+            {% set ns = namespace(worst=-1, who='none') %}
+            {% for name, ent in units.items() %}
+              {% set dt = states(ent) | as_datetime %}
+              {% if dt is not none %}
+                {% set age = (now() - dt).total_seconds() / 60 %}
+                {% if age > ns.worst %}{% set ns.worst = age %}{% set ns.who = name %}{% endif %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.who }}
+
 # ---------------------------------------------------------------------------
 # Rate-of-rise detectors (door-ajar / slow-failure early warning) — STANDARD on
 # every temp sensor. A sustained upward slope catches a cracked door or dying
@@ -407,8 +453,19 @@ automation:
       # Outdoor kitchen fridge (ESPHome probe) — baseline ~45F, transparent door in
       # direct afternoon sun. INITIAL warn 50 / urgent 57 (2026-07-23, per Chris);
       # nightly range-check tunes these off the observed daily band.
-      - { platform: numeric_state, id: warn,   entity_id: sensor.outdoor_kitchen_fridge_temperature, above: 50, for: { minutes: 30 } }
-      - { platform: numeric_state, id: urgent, entity_id: sensor.outdoor_kitchen_fridge_temperature, above: 57, for: { minutes: 20 } }
+      # RETUNED 2026-07-27 (Chris: "update to whatever is sane lately"). The old 50/57
+      # lines were set blind at adoption. Four days of live data show this unit tracks the
+      # WEATHER, not a fault: daily maxima climbed 48.5 -> 49.4 -> 53.5 -> 55.4°F (ambient
+      # hit 87°F) while the daily FLOOR held at 33.0-34.6°F. A unit that still pulls down
+      # to 34 is not failing, so >50 was firing truthfully but un-actionably.
+      # New lines sit above the observed weather envelope: warn 58 (max seen 55.4),
+      # urgent 65 (clearly abnormal). Real failure detection is NOT these — it is
+      # frzmon_outdoor_pulldown (24h floor), which weather cannot trip.
+      # ⚠️ RE-CHECK IN AUGUST: at ambient ~100°F a healthy box in direct sun could push
+      # past 58. If that starts firing on hot afternoons, raise it again — do NOT touch
+      # the 24h floor, that one is the actual health signal.
+      - { platform: numeric_state, id: warn,   entity_id: sensor.outdoor_kitchen_fridge_temperature, above: 58, for: { minutes: 30 } }
+      - { platform: numeric_state, id: urgent, entity_id: sensor.outdoor_kitchen_fridge_temperature, above: 65, for: { minutes: 20 } }
     variables:
       names:
         sensor.garage_freezer_temperature: "Garage freezer"
@@ -495,27 +552,19 @@ automation:
           title: "📈 {{ n }} steadily warming"
           message: "{{ n }} is warming steadily, now {{ states(t) | float | round(1) }}°F — door ajar or failing?"
 
-  # ---- Outdoor kitchen fridge: sustained-plateau / slow-drift warn (2026-07-24) ----
-  # Covers the gap the absolute >50°F warn and the (removed) rate detector both miss:
-  # a plateau in the 44-49°F band. Runs off the 3h mean so normal compressor cycling
-  # can't trip it. Threshold 44°F is PROVISIONAL / low-confidence — observed normal 3h
-  # mean is ~40°F (band peaks ~44°F). The nightly range-check cron + a week of settled
-  # data should tune it. CAVEAT: the adoption baseline was logged ~45-47°F (07-23),
-  # which conflicts with today's 33-44°F band — reconcile that before hardening 44/50/57.
-  - id: frzmon_outdoor_plateau
-    alias: "Freezer monitor — outdoor kitchen fridge sustained warm (plateau)"
-    mode: single
-    trigger:
-      - platform: numeric_state
-        entity_id: sensor.outdoor_kitchen_fridge_3h_mean
-        above: 44
-        for: { minutes: 30 }
-    action:
-      - action: script.frzmon_notify
-        data:
-          critical: false
-          title: "🌡️ Outdoor kitchen fridge running warm"
-          message: "Outdoor kitchen fridge has averaged {{ states('sensor.outdoor_kitchen_fridge_3h_mean') | float | round(1) }}°F over the last 3h — running warm (possible slow failure or seal issue)."
+  # ---- REMOVED 2026-07-27: frzmon_outdoor_plateau (3h-mean > 44°F for 30m) ----
+  # Deleted, not retuned, because it measured the WEATHER rather than the appliance.
+  # It fired 4x in two days (07-26 22:15, 07-27 01:50 / 19:23 / 20:46) — every one of
+  # them truthful and none of them actionable: the 3h mean tracked ambient (87°F outside,
+  # daily maxima 48.5 -> 55.4°F over four days) while the unit's daily FLOOR never moved
+  # off 33.0-34.6°F. A box that still pulls down to 34 is not failing. Raising the line
+  # instead of removing it would just re-create the same noise one heat wave later, and
+  # the 44-vs-45-47 "baseline reconciliation" this entry used to demand was chasing
+  # weather all along — that question is now CLOSED.
+  # The gap it was meant to cover (a slow drift plateauing in the 44-49°F band) is now
+  # covered properly by frzmon_outdoor_pulldown below, which watches the 24h FLOOR — the
+  # one signal a heat wave cannot fake. sensor.outdoor_kitchen_fridge_3h_mean is KEPT for
+  # the dashboard; nothing triggers on it anymore.
 
   # ---- Outdoor kitchen fridge: PULL-DOWN FAILURE (2026-07-27) ----
   # Fires only if the unit fails to reach 40°F at ANY point in 24h — i.e. it has lost
@@ -662,6 +711,18 @@ automation:
           {% endif %}
         {% endfor %}
         {{ ns.items | join(', ') }}
+      # Self-diagnosing hint (2026-07-27). The two 606TX units share ONE 433 topic and one
+      # decoder path, so WHICH of them is silent already tells you where the fault is —
+      # the alert should say so rather than make someone re-derive it at 1am. Observed
+      # twice in four days (07-24 17:13, and 07-26 23:40 -> 07-27 01:05, ~75-83 min each):
+      # BOTH 606s dropped together while the Tower on a different topic held a 49s max
+      # gap — i.e. receiver-side, not the sensors.
+      hint: >-
+        {% set k = 'Kitchen fridge' in stale %}
+        {% set g = 'Garage fridge-freezer' in stale %}
+        {%- if k and g %} BOTH 606 units went silent together — they share one 433 topic and one decoder, so this is almost certainly RECEIVER-side (SDR noise/interference), not two sensors failing at once. Check whether the Tower units are still reporting before touching any hardware.
+        {%- elif k or g %} Only one of the two 606 units is silent, so the shared 433 receive path is fine — this points at that specific sensor (battery or placement).
+        {%- endif %}
     condition:
       # `| trim` is deliberate, not decorative: the `stale` template is built from
       # {% %} control blocks, so it renders with surrounding whitespace. HA does strip
@@ -693,7 +754,7 @@ automation:
         data:
           critical: false
           title: "📡 Fridge/freezer sensor silent"
-          message: "No data from: {{ stale }} (>{{ max_age_min }} min silent). Per-unit sweep, runs every 5 min."
+          message: "No data from: {{ stale }} (>{{ max_age_min }} min silent).{{ hint }}"
 
 # ---------------------------------------------------------------------------
 # Shared notifier — sends to BOTH phones from one place (this replaced the
