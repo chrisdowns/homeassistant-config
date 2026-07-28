@@ -1,0 +1,68 @@
+# Airthings Renew purifier — TV-aware mode control via IFTTT webhooks.
+#
+# The Renew cannot be driven from HA directly: the core airthings integration is
+# sensor-only, the public API has no write endpoints, and the unit refuses all
+# 65535 TCP ports (cloud-only client). IFTTT is the only platform exposing Renew
+# mode actions, so commands go out HA -> IFTTT -> Airthings cloud -> device.
+#
+# Manual speed 5 is the always-on state rather than boost because boost is a timed
+# one-hour burst, while manual mode has no timer. Silent is also timed (8 hours),
+# which the periodic re-assert keeps pushing out.
+#
+# Nothing reports the purifier's mode back to HA, so there is no state to guard on
+# and every call is fired blind. The 30 minute re-assert is the only thing that
+# recovers a dropped webhook.
+#
+# Full design and rationale: ~/homeassistant/docs/renew-purifier-ifttt-design.md
+
+rest_command:
+  renew_max:
+    url: !secret ifttt_renew_max_url
+    method: POST
+    timeout: 20
+  renew_quiet:
+    url: !secret ifttt_renew_quiet_url
+    method: POST
+    timeout: 20
+
+automation:
+  - id: renew_tv_aware_purifier
+    alias: Renew — TV-aware purifier
+    description: >-
+      Manual speed 5 whenever the master bedroom TV is off, silent mode while it is
+      on, around the clock. The purifier must not compete with TV audio, which is the
+      same rule Master Night Noise applies to the Hatch and the Sonos.
+    mode: single
+    triggers:
+      - trigger: template
+        value_template: >-
+          {{ states('media_player.master_bedroom_tv')
+             not in ['paused', 'idle', 'off', 'unavailable', 'unknown'] }}
+        id: tv_on
+      - trigger: template
+        value_template: >-
+          {{ states('media_player.master_bedroom_tv') in ['paused', 'idle', 'off'] }}
+        id: tv_off
+      - trigger: time_pattern
+        minutes: /30
+        id: reassert
+    actions:
+      # unavailable/unknown deliberately matches neither branch: a soundbar dropout
+      # must not slam the purifier to speed 5 mid-movie. Manual 5 is persistent, so
+      # holding the last known state is the safe response to a missing TV state.
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ states('media_player.master_bedroom_tv')
+                     not in ['paused', 'idle', 'off', 'unavailable', 'unknown'] }}
+            sequence:
+              - action: rest_command.renew_quiet
+                continue_on_error: true
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ states('media_player.master_bedroom_tv') in ['paused', 'idle', 'off'] }}
+            sequence:
+              - action: rest_command.renew_max
+                continue_on_error: true
