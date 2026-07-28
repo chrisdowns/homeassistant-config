@@ -54,3 +54,19 @@ panel_custom:
     module_url: /local/pulse-noir-dashboard.js?v=5
     embed_iframe: false
     require_admin: false
+
+# Quiet a known-noisy python-kasa module (2026-07-27). Six WORKING TP-Link devices
+# intermittently fail their optional Time/Cloud/Matter module queries and log an ERROR
+# every cycle. The devices themselves are healthy — entities present, controllable, real
+# on/off states — so these lines are cosmetic. `ha core logs` only returns ~100 lines, and
+# this spam filled all of them, which actively hurt debugging (it buried the output while
+# chasing a template error on 07-27).
+# Scoped deliberately: only the chatty kasa module is silenced. homeassistant.components
+# .tplink stays at default, so genuine integration failures (setup_error / setup_retry)
+# still surface, as does entity unavailability — the observable signals are unaffected.
+# `default: warning` is stated explicitly to preserve the current baseline; omitting it
+# would let the logger integration raise the global level to info and make the log worse.
+logger:
+  default: warning
+  logs:
+    kasa.smart.smartdevice: critical
