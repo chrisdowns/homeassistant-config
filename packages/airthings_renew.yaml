@@ -11,7 +11,7 @@
 #
 # Nothing reports the purifier's mode back to HA, so there is no state to guard on
 # and every call is fired blind. The 30 minute re-assert is the only thing that
-# recovers a dropped webhook.
+# recovers a dropped webhook or a mode changed outside HA.
 #
 # Full design and rationale: ~/homeassistant/docs/renew-purifier-ifttt-design.md
 
@@ -30,39 +30,39 @@ automation:
     alias: Renew — TV-aware purifier
     description: >-
       Manual speed 5 whenever the master bedroom TV is off, silent mode while it is
-      on, around the clock. The purifier must not compete with TV audio, which is the
-      same rule Master Night Noise applies to the Hatch and the Sonos.
+      on, around the clock — unlike the night-noise automations there is no time
+      window. Silent fires only on a real TV-on signal; every other moment, including
+      the whole night, is manual 5. See binary_sensor.master_tv_on for why the Sonos
+      soundbar state cannot be used for this.
     mode: single
     triggers:
-      - trigger: template
-        value_template: >-
-          {{ states('media_player.master_bedroom_tv')
-             not in ['paused', 'idle', 'off', 'unavailable', 'unknown'] }}
+      - trigger: state
+        entity_id: binary_sensor.master_tv_on
+        to: "on"
         id: tv_on
-      - trigger: template
-        value_template: >-
-          {{ states('media_player.master_bedroom_tv') in ['paused', 'idle', 'off'] }}
+      - trigger: state
+        entity_id: binary_sensor.master_tv_on
+        to: "off"
         id: tv_off
       - trigger: time_pattern
         minutes: /30
         id: reassert
     actions:
-      # unavailable/unknown deliberately matches neither branch: a soundbar dropout
-      # must not slam the purifier to speed 5 mid-movie. Manual 5 is persistent, so
-      # holding the last known state is the safe response to a missing TV state.
+      # unavailable/unknown deliberately matches neither branch: holding the last
+      # known mode is the safe response to a missing TV signal, and manual 5 is
+      # persistent so nothing decays while we wait.
       - choose:
           - conditions:
-              - condition: template
-                value_template: >-
-                  {{ states('media_player.master_bedroom_tv')
-                     not in ['paused', 'idle', 'off', 'unavailable', 'unknown'] }}
+              - condition: state
+                entity_id: binary_sensor.master_tv_on
+                state: "on"
             sequence:
               - action: rest_command.renew_quiet
                 continue_on_error: true
           - conditions:
-              - condition: template
-                value_template: >-
-                  {{ states('media_player.master_bedroom_tv') in ['paused', 'idle', 'off'] }}
+              - condition: state
+                entity_id: binary_sensor.master_tv_on
+                state: "off"
             sequence:
               - action: rest_command.renew_max
                 continue_on_error: true

@@ -1,0 +1,31 @@
+# Single source of truth for "the master bedroom TV is on".
+#
+# media_player.master_bedroom_tv is NOT the TV — it is the Sonos Arc Ultra
+# soundbar, and the entity_id comes from the Sonos room name "Master Bedroom TV".
+# Its state tracks whether audio is streaming, not whether the TV has power:
+#
+#   TV audio playing      -> playing, source 'TV',  title 'TV'
+#   TV on, no audio       -> paused,  source None,  title 'Pink Noise'   <- screensaver
+#   night noise playing   -> playing, source None,  title 'Pink Noise'
+#   TV off, nothing on    -> paused,  source None,  title 'Pink Noise'
+#
+# Rows 2 and 4 are identical, so the soundbar alone cannot answer the question.
+# media_player.master_master_samsung_tv (samsungtv) is the real power signal;
+# source == 'TV' is kept as corroboration so a stale samsungtv poll during actual
+# TV audio still reads as on.
+#
+# Consumers hold their last action while this is unavailable rather than
+# assuming off — a dropout must not slam the purifier to speed 5 mid-movie.
+
+template:
+  - binary_sensor:
+      - name: Master TV On
+        unique_id: master_tv_on
+        device_class: power
+        state: >-
+          {{ is_state('media_player.master_master_samsung_tv', 'on')
+             or state_attr('media_player.master_bedroom_tv', 'source') == 'TV' }}
+        availability: >-
+          {{ states('media_player.master_master_samsung_tv')
+               not in ['unavailable', 'unknown']
+             or state_attr('media_player.master_bedroom_tv', 'source') == 'TV' }}
