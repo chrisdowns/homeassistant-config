@@ -196,6 +196,30 @@ sensor:
     sampling_size: 500        # 3h @ 30s ≈ 360 samples; headroom so max_age governs the window
     precision: 1
 
+  # ---- PULL-DOWN FLOOR (2026-07-27) — the specific health signal for an air-probe
+  # fridge in swinging ambient. The mean and the peaks mostly track WEATHER; the
+  # FLOOR tracks the refrigeration. A healthy unit reaches its trough every cycle no
+  # matter how hot it is outside; a failing compressor or a bad seal cannot.
+  # Evidence for using 24h and not 3h: measured rolling 3h minima over 07-26/07-27
+  # were 34.9 34.9 34.7 34.6 34.9 35.6 38.9 38.8 36.5 33.9 34.1 34.3 34.3 35.9 40.3 42.9
+  # — the hot-afternoon troughs climb to 38.9-42.9, so a "3h min > 38" rule (my first
+  # proposal) would have FALSE-FIRED on 4 of 16 windows. Over a full 24h the floor is
+  # rock solid: daily minima 33.0 / 33.6 / 34.6 / 33.9 across 07-24..07-27, even as
+  # daily MAXIMA climbed 48.5 -> 55.4. So >40 for 24h means it genuinely never got
+  # cold all day = real failure, and a heat wave alone cannot trip it.
+  # Name MUST keep the `_min` suffix: the Guardian panel excludes
+  # /_(mean|median|average|avg|min|max|stdev)$/ so derived stats don't duplicate the
+  # real probe's tile (the 3h mean did exactly that once).
+  - platform: statistics
+    name: "Outdoor Kitchen Fridge 24h Min"
+    unique_id: frzmon_outdoor_kitchen_fridge_min_24h
+    entity_id: sensor.outdoor_kitchen_fridge_temperature
+    state_characteristic: value_min
+    max_age:
+      hours: 24
+    sampling_size: 3200      # 24h @ 30s ≈ 2880; headroom so max_age governs the window
+    precision: 1
+
 # ---------------------------------------------------------------------------
 # PER-UNIT LAST-SEEN STAMPS (2026-07-24) — the fix for the shared-topic hole
 # documented at lines 104-107. These fire on the MQTT MESSAGE, so they are
@@ -281,21 +305,29 @@ binary_sensor:
         sample_duration: 1800
         min_gradient: 0.001389
         min_samples: 5
-        max_samples: 50
+        # max_samples 50 -> 400 (2026-07-27). `max_samples` bounds an OLDEST-EVICTED deque,
+        # so the effective window is min(sample_duration, max_samples x cadence) — raising
+        # sample_duration alone is a NO-OP. Tower/B republishes every ~6s and during a real
+        # rise every packet differs, so 1800s needs ~300 samples; 50 capped the window at
+        # ~5 MINUTES instead of 30. EVIDENCE THIS MATTERED: the 07-26 event took this
+        # freezer from -3 to +17.8F and `steadily_warming` never fired — the detector went
+        # on but couldn't hold the 5-min gate off a 5-min window. The absolute warn caught
+        # it, so the layering held, but the rate layer was effectively dead.
+        max_samples: 400
       garage_fridge_rising:             # fridge-class: 8 F/hr over 45 min
         friendly_name: "Garage Fridge Rising"
         entity_id: sensor.garage_fridge_temperature
         sample_duration: 2700
         min_gradient: 0.002222
         min_samples: 4
-        max_samples: 60
+        max_samples: 400        # Tower/A ~8s cadence -> 2700s needs ~340; 60 capped it at ~8 min
       kitchen_fridge_rising:            # fridge-class: 8 F/hr over 45 min
         friendly_name: "Kitchen Fridge Rising"
         entity_id: sensor.kitchen_fridge_temperature
         sample_duration: 2700
         min_gradient: 0.002222
         min_samples: 4
-        max_samples: 60
+        max_samples: 150        # 606 ~31s state-change cadence -> 2700s needs ~87
       garage_fridge_freezer_rising:     # fridge-class, DEFROST-TOLERANT: ~13 F/hr over 45 min
         # min_gradient raised 0.002222->0.0035 (2026-07-23): the daily auto-defrost
         # ramps ~1.1 F/min (66 F/hr) but the 8 F/hr setting also tripped on normal
@@ -305,7 +337,13 @@ binary_sensor:
         sample_duration: 2700
         min_gradient: 0.0035
         min_samples: 4
-        max_samples: 60
+        # 60 -> 150 (606 ~31s cadence; 2700s needs ~87, so 60 capped the window at ~31 min).
+        # ⚠️ WATCH: min_gradient 0.0035 was tuned empirically on 07-23 AGAINST the shorter
+        # ~31-min window. Lengthening to the intended 45 min changes the gradient fit —
+        # expect FEWER flaps (longer window smooths), but re-check flap frequency in a few
+        # days before trusting the tuning. This unit flapped 6x on 07-24 and is flapping
+        # still; the automation's `for: 20m` gate is what has kept it from alerting.
+        max_samples: 150
       outdoor_kitchen_fridge_rising:    # DASHBOARD-ONLY as of 2026-07-24 (no longer alerts)
         # Rate alerting for this unit was removed — see the note in frzmon_rising_alerts.
         # The ESPHome probe reads air, so this trend rides the ~11°F compressor cycle and
@@ -316,7 +354,7 @@ binary_sensor:
         sample_duration: 2700
         min_gradient: 0.002222
         min_samples: 4
-        max_samples: 60
+        max_samples: 150        # ESPHome 30s cadence -> 2700s needs ~90 (dashboard-only anyway)
 
 automation:
   # ============================================================================
@@ -414,7 +452,15 @@ automation:
         binary_sensor.kitchen_fridge_rising: sensor.kitchen_fridge_temperature
         binary_sensor.garage_fridge_freezer_rising: sensor.garage_fridge_freezer_temperature
       warn_of:
-        binary_sensor.garage_freezer_rising: -5
+        # -5 -> 0 (2026-07-27): THIS WAS A BUG I INTRODUCED ON 07-24. When the garage
+        # freezer's absolute warn was retuned from >-5 to >0/>5, this gate was left at -5.
+        # The condition below only alerts when temp is BELOW the warn line (to avoid
+        # double-firing with the absolute warn), so with the post-step band of -4.0..-2.9
+        # EVERY garage-freezer rising alert was silently suppressed. Combined with the
+        # max_samples window cap, that is why the 07-26 event (-3 -> +17.8°F) produced no
+        # "steadily warming" alert at all — and the stale gate was the DOMINANT cause.
+        # LESSON: retuning a threshold means auditing every OTHER place that mirrors it.
+        binary_sensor.garage_freezer_rising: 0
         binary_sensor.garage_fridge_rising: 40
         binary_sensor.kitchen_fridge_rising: 40
         binary_sensor.garage_fridge_freezer_rising: 10
@@ -426,6 +472,19 @@ automation:
     condition:
       - condition: template
         value_template: "{{ states(temp_of[trigger.entity_id]) | float(999) < (warn_of[trigger.entity_id] | float) }}"
+      # ⚠️ RESTORED-STATE GUARD (2026-07-27). Trend binary_sensors RESTORE their previous
+      # on/off state across a restart, before they have collected any samples. HA writes
+      # that restored state at startup, which registers as a transition TO "on" and arms
+      # this automation's `for:` timer — so every restart can produce a spurious "steadily
+      # warming" push minutes later, off a trend that has not actually measured anything.
+      # Observed live: right after the 00:17Z restart, garage_freezer_rising read `on` with
+      # sample_count=2 against its min_samples=5. It also explains the 07-24 21:40 alert,
+      # 22 min after that restart. `sample_count` >= 5 is >= the max min_samples of all
+      # units here, so a restored/refilling deque cannot satisfy it — only a genuinely
+      # computed trend can. (This artifact was previously masked by the stale warn_of gate
+      # above; fixing that gate without adding this guard would have armed it.)
+      - condition: template
+        value_template: "{{ state_attr(trigger.entity_id, 'sample_count') | int(0) >= 5 }}"
     action:
       - variables:
           n: "{{ names[trigger.entity_id] }}"
@@ -457,6 +516,29 @@ automation:
           critical: false
           title: "🌡️ Outdoor kitchen fridge running warm"
           message: "Outdoor kitchen fridge has averaged {{ states('sensor.outdoor_kitchen_fridge_3h_mean') | float | round(1) }}°F over the last 3h — running warm (possible slow failure or seal issue)."
+
+  # ---- Outdoor kitchen fridge: PULL-DOWN FAILURE (2026-07-27) ----
+  # Fires only if the unit fails to reach 40°F at ANY point in 24h — i.e. it has lost
+  # the ability to pull down at all. Deliberately insensitive to ambient: the peaks and
+  # the 3h mean both climb with the weather (07-27 max hit 55.4 and the 3h mean 51.6,
+  # tripping the >50 warn and the >44 plateau truthfully but un-actionably), while the
+  # daily FLOOR held at 33.9. This is the complement to those two: they say "it's warm",
+  # this says "it's broken". Threshold 40 leaves ~5°F of headroom over the observed
+  # floor. Low stakes per Chris — this unit only stores water, no food-safety exposure.
+  - id: frzmon_outdoor_pulldown
+    alias: "Freezer monitor — outdoor kitchen fridge not pulling down (24h floor)"
+    mode: single
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.outdoor_kitchen_fridge_24h_min
+        above: 40
+        for: { minutes: 60 }
+    action:
+      - action: script.frzmon_notify
+        data:
+          critical: false
+          title: "🧊 Outdoor kitchen fridge not cooling down"
+          message: "Outdoor kitchen fridge has not gotten below {{ states('sensor.outdoor_kitchen_fridge_24h_min') | float | round(1) }}°F in 24h (healthy floor is ~34°F). It is failing to pull down — compressor or door seal, not just hot weather."
 
   # ===================== OFFLINE (no reading) =====================
   # `for` widened 1m -> 15m to ride out brief WiFi/reception gaps; a genuinely dead
@@ -587,6 +669,25 @@ automation:
       # TRUE on every sweep and push an empty alert every 5 min. Trim makes it explicit.
       - condition: template
         value_template: "{{ stale | trim | length > 0 }}"
+      # ⚠️ REPEAT SUPPRESSION (added 2026-07-27 — fixing MY bug). As first shipped this
+      # sweep re-notified on EVERY 5-min pass for as long as anything was stale: the real
+      # dual-606 outage on 07-27 00:05-01:05 produced 13 sweep fires (+2 from the
+      # transition-based offline automation) = ~30 phone pushes in about an hour. That is
+      # the exact alert fatigue the 17->4 consolidation existed to kill. The leak sweep
+      # this was modeled on can't spam because it only runs 3x/day; this one runs 12x/hr.
+      # Cooldown keyed on the automation's OWN last_triggered — which only advances when
+      # the automation actually RUNS (i.e. when conditions passed and we notified), so it
+      # is a true "last time we alerted" stamp and needs no helper entity. Conditions are
+      # evaluated BEFORE the run, so this reads the PREVIOUS notification's time.
+      # Every message already lists ALL currently-stale units, so a unit going stale
+      # inside the cooldown is still reported on the next pass (<=1h later), and the
+      # transition-based frzmon_sensor_offline covers new drops independently.
+      # last_triggered resets to None on restart -> first post-restart alert is immediate
+      # (fail-loud, deliberate).
+      - condition: template
+        value_template: >-
+          {% set lt = state_attr('automation.freezer_monitor_per_unit_staleness_sweep', 'last_triggered') %}
+          {{ lt is none or (now() - lt).total_seconds() > 3600 }}
     action:
       - action: script.frzmon_notify
         data:
