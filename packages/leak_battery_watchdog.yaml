@@ -1,0 +1,91 @@
+# Leak-sensor BATTERY-REPORTING watchdog — HA package
+# ---------------------------------------------------------------------------
+# Deploy: copy to the Green at /config/packages/leak_battery_watchdog.yaml
+# (configuration.yaml already has `homeassistant: packages: !include_dir_named packages`).
+# New automations inside a package ARE picked up by `automation.reload` — no restart
+# needed (a brand-new top-level DOMAIN key would need one; `automation:` is already loaded).
+#
+# WHY THIS EXISTS (2026-07-27)
+# ---------------------------------------------------------------------------
+# `automation.water_leak_batteries` alerts on `numeric_state below: 20`. A numeric_state
+# trigger can NEVER fire on a non-numeric state — so any leak sensor whose battery reads
+# `unknown` / `unavailable` is SILENTLY EXCLUDED from low-battery monitoring entirely.
+# Its cell can then die with zero warning, and the leak sensor is simply gone.
+#
+# This is not hypothetical. The Garage Freezer BADRING (ieee 94:b2:16:ff:fe:b7:78:2f)
+# re-paired fine on 07-24 and has checked in autonomously for days at LQI 43 — but its
+# power-config cluster reporting binding never took, so `..._battery_4` has NEVER
+# reported (2 history points, both `unknown`). Chris spotted it on the Guardian panel
+# while a hand-written health check that only looked at wet/unavailable called the fleet
+# "10/10 all good". Same chronic cause as the Chris Sink sensor on 07-20.
+#
+# So: a battery that stops REPORTING must be as loud as a battery that reports LOW.
+# A future re-pair that drops a sensor out of battery monitoring can no longer do it
+# silently.
+#
+# DESIGN NOTES
+# ---------------------------------------------------------------------------
+# * Membership comes from `group.water_leak_sensors` — the same single source of truth
+#   the leak offline sweep uses, so adding a sensor to the group is enough; this file
+#   never needs editing per-sensor.
+# * Battery entities are found by DEVICE_CLASS, not by name. A `_battery` suffix match
+#   FAILS on the numbered duplicates (`..._battery_4` ends in `_4`) — that exact bug
+#   made the first version of this template report 0 problems while one existed.
+#   Verified against live state: 10 members -> 10 battery entities -> 1 flagged.
+# * `states(b) | float(-1) < 0` catches unknown / unavailable / empty / non-numeric in
+#   one test (real percentages are always >= 0). It deliberately does NOT duplicate the
+#   existing below-20 low-battery alert.
+# * Twice-daily triggers with a 20h cooldown on the automation's own `last_triggered`:
+#   effectively one push per day while a sensor stays broken (no nagging), but a NEW
+#   occurrence is caught within ~12h instead of waiting a full day.
+# * Routed through `script.frzmon_notify` — it is this box's generic both-phones
+#   notifier with channel/importance routing. The "frzmon" name is historical (it was
+#   written for the freezer package); `importance: default` keeps this a routine alert
+#   rather than a high-importance safety push, per the alert-fatigue convention.
+# ---------------------------------------------------------------------------
+
+automation:
+  - id: leakmon_battery_not_reporting
+    alias: "Water leak — battery not reporting"
+    mode: single
+    trigger:
+      - platform: time
+        at: "09:00:00"
+      - platform: time
+        at: "21:00:00"
+    variables:
+      bad: >-
+        {% set ns = namespace(bad=[]) %}
+        {% for e in state_attr('group.water_leak_sensors', 'entity_id') or [] %}
+          {% set d = device_id(e) %}
+          {% if d %}
+            {% for b in device_entities(d) %}
+              {% if b.startswith('sensor.') and state_attr(b, 'device_class') == 'battery' %}
+                {% if (states(b) | float(-1)) < 0 %}
+                  {% set ns.bad = ns.bad + [ (device_attr(d, 'name_by_user') or device_attr(d, 'name')) ~ ' (' ~ states(b) ~ ')' ] %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.bad | join(', ') }}
+    condition:
+      - condition: template
+        value_template: "{{ bad | trim | length > 0 }}"
+      # 20h cooldown so a persistent fault is one push/day, not one per trigger.
+      # Conditions evaluate BEFORE the run, so last_triggered is the previous alert.
+      - condition: template
+        value_template: >-
+          {% set lt = state_attr('automation.water_leak_battery_not_reporting', 'last_triggered') %}
+          {{ lt is none or (now() - lt).total_seconds() > 72000 }}
+    action:
+      - action: script.frzmon_notify
+        data:
+          critical: false
+          importance: default
+          title: "🔋 Leak sensor battery not reporting"
+          message: >-
+            {{ bad }} — battery level is not being reported, so the low-battery alert
+            (numeric_state below 20) can NEVER fire for it. Fix: wake the sensor with a
+            button press, then ZHA Reconfigure; if that fails, re-pair. Leak detection
+            itself still works.
