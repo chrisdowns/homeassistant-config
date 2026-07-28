@@ -1,6 +1,9 @@
 - id: '1732730930740'
   alias: Master Night Noise
-  description: ''
+  description: Brown noise on the Hatch and the Sonos from 10pm to 9am, re-checked
+    every minute so a dropout or a mid-night TV session recovers on its own. TV-on
+    comes from binary_sensor.master_tv_on — the soundbar's own playback state cannot
+    be used here, since this automation is what makes it play.
   triggers:
   - at: '22:00:00'
     trigger: time
@@ -37,9 +40,9 @@
           action: homeassistant.update_entity
         - choose:
           - conditions:
-            - condition: template
-              value_template: '{{ states(''media_player.master_bedroom_tv'') not in
-                [''paused'', ''idle'', ''off''] }}'
+            - condition: state
+              entity_id: binary_sensor.master_tv_on
+              state: 'on'
             sequence:
             - condition: template
               value_template: '{{ is_state(''media_player.my_rest_2nd_gen_media_player'',
@@ -70,23 +73,29 @@
                   sound_mode: BrownNoise
                 action: media_player.select_sound_mode
                 continue_on_error: true
-          - target:
-              entity_id: media_player.master_bedroom_tv
-            data:
-              volume_level: 0.25
-            action: media_player.volume_set
-            continue_on_error: true
-          - target:
-              entity_id: media_player.master_bedroom_tv
-            data:
-              repeat: all
-            action: media_player.repeat_set
-            continue_on_error: true
-          - target:
-              entity_id: media_player.master_bedroom_tv
-            action: sonos.play_queue
-            data: {}
-            continue_on_error: true
+          - choose:
+            - conditions:
+              - condition: template
+                value_template: '{{ states(''media_player.master_bedroom_tv'') !=
+                  ''playing'' }}'
+              sequence:
+              - target:
+                  entity_id: media_player.master_bedroom_tv
+                data:
+                  volume_level: 0.25
+                action: media_player.volume_set
+                continue_on_error: true
+              - target:
+                  entity_id: media_player.master_bedroom_tv
+                data:
+                  repeat: all
+                action: media_player.repeat_set
+                continue_on_error: true
+              - target:
+                  entity_id: media_player.master_bedroom_tv
+                action: sonos.play_queue
+                data: {}
+                continue_on_error: true
   mode: restart
 - id: '1733074264311'
   alias: Nightly Door Lock
@@ -740,15 +749,14 @@
 - id: master_vacuum_skip_if_tv_on
   alias: Master vacuum — daily run unless master TV is on
   description: Starts the master Roborock (S5 Max) at 5pm CT only when the master
-    TV is off. TV-on is inferred from the master Sonos soundbar's source == 'TV'.
+    TV is off. TV-on comes from binary_sensor.master_tv_on; an unavailable signal
+    still allows the run, as it did before that sensor existed.
   triggers:
   - at: '18:00:00'
     trigger: time
   conditions:
   - condition: template
-    value_template: '{{ state_attr(''media_player.master_bedroom_tv'',''source'')
-      != ''TV'' and not is_state(''media_player.master_master_samsung_tv'',''on'')
-      }}'
+    value_template: '{{ not is_state(''binary_sensor.master_tv_on'', ''on'') }}'
   actions:
   - action: vacuum.start
     target:
@@ -757,16 +765,16 @@
 - id: master_vacuum_dock_if_tv_on
   alias: Master vacuum — send home if it starts while master TV is on
   description: Safety net for ANY start source (incl. a leftover Roborock cloud schedule).
-    If the master robot begins cleaning while the master TV is on (Sonos soundbar
-    source=TV OR native Samsung TV state=on), dock it and notify.
+    If the master robot begins cleaning while the master TV is on
+    (binary_sensor.master_tv_on), dock it and notify.
   triggers:
   - trigger: state
     entity_id: vacuum.master_s5_max
     to: cleaning
   conditions:
-  - condition: template
-    value_template: '{{ state_attr(''media_player.master_bedroom_tv'',''source'')
-      == ''TV'' or is_state(''media_player.master_master_samsung_tv'',''on'') }}'
+  - condition: state
+    entity_id: binary_sensor.master_tv_on
+    state: 'on'
   actions:
   - action: vacuum.return_to_base
     target:
