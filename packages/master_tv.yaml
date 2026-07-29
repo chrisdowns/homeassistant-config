@@ -10,9 +10,16 @@
 #   TV off, nothing on    -> paused,  source None,  title 'Pink Noise'
 #
 # Rows 2 and 4 are identical, so the soundbar alone cannot answer the question.
-# media_player.master_master_samsung_tv (samsungtv) is the real power signal;
-# source == 'TV' is kept as corroboration so a stale samsungtv poll during actual
-# TV audio still reads as on.
+# media_player.master_master_samsung_tv (samsungtv) is the real power signal and
+# is authoritative whenever it has one: it reports on/off crisply and led both of
+# tonight's off-transitions by ~10 minutes.
+#
+# The soundbar keeps reporting `playing` / source 'TV' for ~10 minutes after the
+# TV powers down (2026-07-28: TV off 16:59:12 -> soundbar dropped 17:09:04; off
+# 21:44:04 -> dropped 21:54:03). An OR across both signals therefore let the
+# laggiest input own the off-transition and delayed the purifier ramp by 10
+# minutes. source == 'TV' is now corroboration only while samsungtv has no
+# opinion at all — an explicit 'off' is believed immediately.
 #
 # Consumers hold their last action while this is unavailable rather than
 # assuming off — a dropout must not slam the purifier to speed 5 mid-movie.
@@ -24,7 +31,9 @@ template:
         device_class: power
         state: >-
           {{ is_state('media_player.master_master_samsung_tv', 'on')
-             or state_attr('media_player.master_bedroom_tv', 'source') == 'TV' }}
+             or (states('media_player.master_master_samsung_tv')
+                   in ['unavailable', 'unknown']
+                 and state_attr('media_player.master_bedroom_tv', 'source') == 'TV') }}
         availability: >-
           {{ states('media_player.master_master_samsung_tv')
                not in ['unavailable', 'unknown']
