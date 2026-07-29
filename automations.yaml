@@ -748,7 +748,7 @@
   max: 5
 - id: master_vacuum_skip_if_tv_on
   alias: Master vacuum — daily run unless master TV is on
-  description: Starts the master Roborock (S5 Max) at 5pm CT only when the master
+  description: Starts the master Roborock (S5 Max) at 6pm CT only when the master
     TV is off. TV-on comes from binary_sensor.master_tv_on; an unavailable signal
     still allows the run, as it did before that sensor existed.
   triggers:
