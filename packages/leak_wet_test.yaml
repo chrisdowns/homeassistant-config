@@ -1,0 +1,76 @@
+# TEMPORARY — garage-freezer BADRING wet test, armed 2026-07-29. DELETE AFTER THE RUN.
+#
+# Two things are unverified on ieee 94:b2:16:ff:fe:b7:78:2f (Water Leak Sensor -
+# Garage Freezer, entity suffix _4):
+#
+#   1. Leak reporting itself. The unit has only ever been observed DRY. Dry is not
+#      the same as working, and it is the one sensor whose alert path has never
+#      been exercised end to end.
+#   2. Battery visibility. sensor...battery_4 has never reported a number, and
+#      attributes_cache_v15 holds ZERO Basic (0x0000) and ZERO Power Config
+#      (0x0001) rows for this ieee — only Poll Control and OTA, both of which the
+#      device populates itself. Coordinator-initiated reads have never completed
+#      here, while every sibling has both attributes cached.
+#
+# A wet contact is the only reliable window when the device stays awake long
+# enough to answer a read (there is no on-demand wake — a button press does NOT
+# force a battery report). So this fires reads at it while it is talking.
+#
+# Notifications go to the Pixel only, deliberately: the test is attended and a
+# second channel would just double the noise. The standing "Water Leak"
+# automation will ALSO page on the same transition (after its 5s debounce) —
+# that push arriving IS the leak-path verification.
+
+automation:
+  - id: leak_wet_test_garage_freezer
+    alias: Leak wet test — garage freezer
+    description: >-
+      On the first wet transition, poll the battery entity while the device is awake,
+      then report what landed. Temporary; delete once the test is judged.
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.ikea_of_sweden_badring_water_leakage_sensor_4
+        to: "on"
+    actions:
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: Wet test — contact made
+          message: >-
+            Wet at {{ now().strftime('%H:%M:%S') }}. Keep the contacts wet ~3 min.
+            battery_4 right now: {{ states('sensor.ikea_of_sweden_badring_water_leakage_sensor_battery_4') }}
+      # update_entity on a ZHA sensor issues a real attribute read rather than
+      # re-serving the cache, which is exactly the operation that has never
+      # succeeded on this device. Nine attempts over ~3 minutes: the awake window
+      # after each transmission is short, so one shot is not a fair test.
+      - repeat:
+          count: 9
+          sequence:
+            - action: homeassistant.update_entity
+              target:
+                entity_id: sensor.ikea_of_sweden_badring_water_leakage_sensor_battery_4
+              continue_on_error: true
+            - delay:
+                seconds: 20
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: Wet test — 3 minute mark
+          message: >-
+            battery_4 = {{ states('sensor.ikea_of_sweden_badring_water_leakage_sensor_battery_4') }}.
+            A number means the read landed; still unknown means it did not. Dry the contacts now.
+      # BADRING reports battery on change only, so a late arrival is possible but
+      # cannot be waited for indefinitely — one delayed check, then done.
+      - delay:
+          minutes: 12
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.ikea_of_sweden_badring_water_leakage_sensor_battery_4
+        continue_on_error: true
+      - delay:
+          seconds: 30
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: Wet test — 15 minute check
+          message: >-
+            battery_4 = {{ states('sensor.ikea_of_sweden_badring_water_leakage_sensor_battery_4') }}
+            (leak contact is {{ states('binary_sensor.ikea_of_sweden_badring_water_leakage_sensor_4') }}).
