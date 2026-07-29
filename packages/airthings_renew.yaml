@@ -10,8 +10,9 @@
 # which the periodic re-assert keeps pushing out.
 #
 # Nothing reports the purifier's mode back to HA, so there is no state to guard on
-# and every call is fired blind. The 30 minute re-assert is the only thing that
-# recovers a dropped webhook or a mode changed outside HA.
+# and every call is fired blind. The re-assert is the only thing that recovers a
+# dropped webhook or a mode changed outside HA: every 30 minutes normally, every 5
+# from 10pm to 1am, when Chris is in the room and a wrong mode is most noticeable.
 #
 # Full design and rationale: ~/homeassistant/docs/renew-purifier-ifttt-design.md
 
@@ -44,9 +45,18 @@ automation:
         entity_id: binary_sensor.master_tv_on
         to: "off"
         id: tv_off
+      # One /5 pattern rather than /5 plus /30: two patterns would both fire on the
+      # hour and half hour, and mode single would drop one with a spurious warning.
       - trigger: time_pattern
-        minutes: /30
+        minutes: /5
         id: reassert
+    conditions:
+      # Only the re-assert is rate-limited; a real TV transition always passes.
+      - condition: template
+        value_template: >-
+          {{ trigger.id | default('') != 'reassert'
+             or now().hour in [22, 23, 0]
+             or now().minute % 30 == 0 }}
     actions:
       # unavailable/unknown deliberately matches neither branch: holding the last
       # known mode is the safe response to a missing TV signal, and manual 5 is
