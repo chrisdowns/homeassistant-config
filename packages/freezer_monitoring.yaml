@@ -287,6 +287,23 @@ template:
   # one rtl_433 setting, compare. Recorded as a measurement so it graphs.
   # Rendering note: templates containing now() are re-evaluated by HA every minute, which
   # is exactly the cadence wanted here — no trigger needed.
+  # ---- DEFROST WINDOW (2026-07-30) ----
+  # The garage fridge-freezer runs an ADAPTIVE auto-defrost: 1-2 episodes per day at
+  # wandering clock times (measured 05:25Z, 17:42Z, 18:01Z, 19:02Z, 19:46Z, 06:10Z over
+  # four days), peaking 26-29°F for 32-38 min. It warms the shared cabinet, and since
+  # the fridge probe moved to the back of the top shelf it sees that too: the fridge
+  # climbs ~10-13°F/hr to 35-37°F and falls straight back. That limb clears the 8°F/hr
+  # fridge-class rate gate, so a defrost landing overnight pages a false "steadily
+  # warming" (it did at 01:31 CDT on 07-30). This flag exists to suppress that — see the
+  # rate automation, where the suppression is TIME-BOUNDED so a genuine failure that
+  # parks the freezer above 10°F cannot mute the fridge's rate alert indefinitely.
+  - binary_sensor:
+      - name: "Garage Fridge-Freezer Defrost"
+        unique_id: frzmon_garage_frdgfrzr_defrost
+        icon: mdi:snowflake-melt
+        state: >-
+          {{ states('sensor.garage_fridge_freezer_temperature') | float(-99) > 10 }}
+
   - sensor:
       - name: "433 Reception Worst Gap"
         unique_id: frzmon_433_worst_gap
@@ -464,8 +481,19 @@ automation:
       # ⚠️ RE-CHECK IN AUGUST: at ambient ~100°F a healthy box in direct sun could push
       # past 58. If that starts firing on hot afternoons, raise it again — do NOT touch
       # the 24h floor, that one is the actual health signal.
-      - { platform: numeric_state, id: warn,   entity_id: sensor.outdoor_kitchen_fridge_temperature, above: 58, for: { minutes: 30 } }
-      - { platform: numeric_state, id: urgent, entity_id: sensor.outdoor_kitchen_fridge_temperature, above: 65, for: { minutes: 20 } }
+      # RETUNED AGAIN 2026-07-30: the probe was moved DEEPER into the box on 07-28
+      # ~17:00, which removed the afternoon sun ramp from the signal entirely. The
+      # first post-move sun window (07-29 13:00-18:00) peaked at 36.5°F against 57.1
+      # and 55.4 on the two days before it, and two consecutive overnight windows agree
+      # to 0.3°F (floors 31.3 / 31.5). Against a 36.6°F ceiling the old 58/65 lines
+      # could never fire at all. 48/55 is deliberately INTERIM and wider than the
+      # observed band: only ONE post-move afternoon has been sampled, at unknown
+      # ambient severity, and a dead box drifts toward ambient anyway — so this catches
+      # failure with near-identical latency while surviving an unsampled 95°F day.
+      # Tighten toward 44/50 at the 08-01 review if three days including a genuinely
+      # hot afternoon stay at or below ~38-40.
+      - { platform: numeric_state, id: warn,   entity_id: sensor.outdoor_kitchen_fridge_temperature, above: 48, for: { minutes: 30 } }
+      - { platform: numeric_state, id: urgent, entity_id: sensor.outdoor_kitchen_fridge_temperature, above: 55, for: { minutes: 10 } }
     variables:
       names:
         sensor.garage_freezer_temperature: "Garage freezer"
@@ -496,6 +524,16 @@ automation:
       - { platform: state, entity_id: binary_sensor.garage_fridge_rising,         to: "on", for: { minutes: 20 } }
       - { platform: state, entity_id: binary_sensor.kitchen_fridge_rising,        to: "on", for: { minutes: 20 } }
       - { platform: state, entity_id: binary_sensor.garage_fridge_freezer_rising, to: "on", for: { minutes: 20 } }
+      # RE-ARM (2026-07-30). Without this the defrost suppression below can swallow a
+      # real alert: if the garage fridge's rising `for: 20m` matures INSIDE the
+      # suppression window, the only trigger it ever gets is consumed and nothing fires
+      # again even though the fridge keeps warming. So when the defrost flag clears,
+      # re-evaluate — the shared conditions require the fridge to still be rising.
+      # `for: 3m` is load-bearing, not cosmetic: the freezer reports every ~31s, so one
+      # sample chattering across the 10°F line mid-defrost would read as "defrost over",
+      # re-arm, and fire exactly the mid-defrost push this suppression exists to kill.
+      # Costs 3 min of re-arm latency; also absorbs the unknown->off edge at entity creation.
+      - { platform: state, entity_id: binary_sensor.garage_fridge_freezer_defrost, to: "off", id: defrost_cleared, for: { minutes: 3 } }
       # Outdoor kitchen fridge DROPPED from rate detection 2026-07-24: the probe reads
       # AIR, so its normal compressor cycle swings ~11°F (33↔44°F) every 45-90 min —
       # each warming limb (~12°F/hr for ~45 min) is indistinguishable from a door-ajar,
@@ -503,6 +541,12 @@ automation:
       # two for this unit. Covered instead by the absolute >50°F warn and the new 3h-mean
       # plateau alert (frzmon_outdoor_plateau). Trend sensor kept for dashboard only.
     variables:
+      # The re-arm trigger fires on the DEFROST flag, not on a *_rising sensor, so it has
+      # no entry in the lookups below. Map it back to the unit it speaks for; every other
+      # trigger speaks for itself.
+      subject: >-
+        {{ 'binary_sensor.garage_fridge_rising'
+           if trigger.id | default('') == 'defrost_cleared' else trigger.entity_id }}
       temp_of:
         binary_sensor.garage_freezer_rising: sensor.garage_freezer_temperature
         binary_sensor.garage_fridge_rising: sensor.garage_fridge_temperature
@@ -528,7 +572,7 @@ automation:
         binary_sensor.garage_fridge_freezer_rising: "Garage fridge-freezer"
     condition:
       - condition: template
-        value_template: "{{ states(temp_of[trigger.entity_id]) | float(999) < (warn_of[trigger.entity_id] | float) }}"
+        value_template: "{{ states(temp_of[subject]) | float(999) < (warn_of[subject] | float) }}"
       # ⚠️ RESTORED-STATE GUARD (2026-07-27). Trend binary_sensors RESTORE their previous
       # on/off state across a restart, before they have collected any samples. HA writes
       # that restored state at startup, which registers as a transition TO "on" and arms
@@ -541,11 +585,30 @@ automation:
       # computed trend can. (This artifact was previously masked by the stale warn_of gate
       # above; fixing that gate without adding this guard would have armed it.)
       - condition: template
-        value_template: "{{ state_attr(trigger.entity_id, 'sample_count') | int(0) >= 5 }}"
+        value_template: "{{ state_attr(subject, 'sample_count') | int(0) >= 5 }}"
+      # ⚠️ DEFROST SUPPRESSION — TIME-BOUNDED ON PURPOSE (2026-07-30, garage fridge only).
+      # A plain "skip while the freezer is above 10°F" gate would be FAIL-DEADLY: an
+      # appliance that genuinely dies parks the freezer above 10°F indefinitely and the
+      # fridge's rate alert would be muted exactly when it matters. So the gate only holds
+      # while the defrost is both ACTIVE and YOUNG. Measured time above 10°F has never
+      # exceeded ~25 min (24.8 last night) across six episodes, so 60 min is ~2.4x the
+      # envelope; past that the gate self-lifts. Backstop either way: the freezer's own
+      # absolute warn (>10°F for 45m) has already paged before the gate expires.
+      - condition: template
+        value_template: >-
+          {{ subject != 'binary_sensor.garage_fridge_rising'
+             or not (is_state('binary_sensor.garage_fridge_freezer_defrost', 'on')
+                     and (now() - states.binary_sensor.garage_fridge_freezer_defrost.last_changed).total_seconds() < 3600) }}
+      # The re-arm trigger must not fire on a fridge that has since stopped warming.
+      - condition: template
+        value_template: >-
+          {{ trigger.id | default('') != 'defrost_cleared'
+             or (is_state('binary_sensor.garage_fridge_rising', 'on')
+                 and (now() - states.binary_sensor.garage_fridge_rising.last_changed).total_seconds() >= 1200) }}
     action:
       - variables:
-          n: "{{ names[trigger.entity_id] }}"
-          t: "{{ temp_of[trigger.entity_id] }}"
+          n: "{{ names[subject] }}"
+          t: "{{ temp_of[subject] }}"
       - action: script.frzmon_notify
         data:
           critical: false
@@ -578,16 +641,21 @@ automation:
     alias: "Freezer monitor — outdoor kitchen fridge not pulling down (24h floor)"
     mode: single
     trigger:
+      # 40 -> 36 (2026-07-30): the deeper probe lowered the healthy floor from
+      # 33.5-34.7 to 30.4-31.5. The old line kept 5.5-6.5°F of headroom over the floor,
+      # so the equivalent is 36-37 — and 40 is now so far above the floor it would only
+      # catch a total failure. 34 was rejected: the OLD healthy floor sat above it, so a
+      # heat-wave brush with 34 is plausible without anything being broken.
       - platform: numeric_state
         entity_id: sensor.outdoor_kitchen_fridge_24h_min
-        above: 40
+        above: 36
         for: { minutes: 60 }
     action:
       - action: script.frzmon_notify
         data:
           critical: false
           title: "🧊 Outdoor kitchen fridge not cooling down"
-          message: "Outdoor kitchen fridge has not gotten below {{ states('sensor.outdoor_kitchen_fridge_24h_min') | float | round(1) }}°F in 24h (healthy floor is ~34°F). It is failing to pull down — compressor or door seal, not just hot weather."
+          message: "Outdoor kitchen fridge has not gotten below {{ states('sensor.outdoor_kitchen_fridge_24h_min') | float | round(1) }}°F in 24h (healthy floor is ~31°F). It is failing to pull down — compressor or door seal, not just hot weather."
 
   # ===================== OFFLINE (no reading) =====================
   # `for` widened 1m -> 15m to ride out brief WiFi/reception gaps; a genuinely dead
