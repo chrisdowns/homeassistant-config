@@ -478,9 +478,27 @@ automation:
       # ⚠️ This probe reads the COLDEST zone in the box. Door-bin temperature runs ~10°F
       # warmer, so >36 here means roughly 46 where food actually sits — a good FAILURE
       # detector, a poor food-safety thermometer. A second probe is the only real fix.
-      - { platform: numeric_state, id: warn,   entity_id: sensor.garage_fridge_temperature,         above: 36, for: { minutes: 30 } }
-      - { platform: numeric_state, id: warn,   entity_id: sensor.garage_fridge_temperature,         above: 34, for: { hours: 2 } }
-      - { platform: numeric_state, id: urgent, entity_id: sensor.garage_fridge_temperature,         above: 42, for: { minutes: 10 } }
+      # ⏸️ HELD WIDE 2026-07-31 17:36, HOURS AFTER BEING TIGHTENED — read this before
+      # "fixing" it. The 36/30m + 34/2h + 42/10m set was correct and measured, but it was
+      # measured for the BACK OF THE TOP SHELF, and Chris is moving the probe to a central
+      # position. Nothing in the fridge was freezing, so the 23.9°F floor was a genuine
+      # cold-spot reading rather than a food problem, and the dial stays at max-1.
+      # A central position sits between the two extremes already measured — back ~29°F
+      # mean, door ~39°F — so it should land somewhere near 33-35. Against that, a warn at
+      # 36 with a 30-minute gate would page within hours of the move, all night, for a
+      # perfectly healthy box. So these revert to the pre-move numbers, which are loose
+      # for any position but still catch a genuine failure (a dead box drifts to garage
+      # ambient, far past 45).
+      # The tight set is NOT lost — it is recorded in commit 2a32658 along with the dwell
+      # measurements behind it, and the same method re-runs once the new position has three
+      # settled nights: defrost dwell above each candidate line, then the longest
+      # continuous non-defrost run, then pick the line with >=3x margin.
+      # ⚠️ The defrost coupling may also weaken — a central probe sits further from the
+      # shared evaporator than the back one did, so re-measure the bump before assuming
+      # the old 35-37°F excursions still apply.
+      - { platform: numeric_state, id: warn,   entity_id: sensor.garage_fridge_temperature,         above: 42, for: { minutes: 20 } }
+      - { platform: numeric_state, id: warn,   entity_id: sensor.garage_fridge_temperature,         above: 40, for: { hours: 2 } }
+      - { platform: numeric_state, id: urgent, entity_id: sensor.garage_fridge_temperature,         above: 45, for: { minutes: 10 } }
       - { platform: numeric_state, id: warn,   entity_id: sensor.kitchen_fridge_temperature,        above: 40, for: { minutes: 10 } }
       - { platform: numeric_state, id: urgent, entity_id: sensor.kitchen_fridge_temperature,        above: 45, for: { minutes: 10 } }
       - { platform: numeric_state, id: warn,   entity_id: sensor.garage_fridge_freezer_temperature, above: 10, for: { minutes: 45 } }
@@ -597,7 +615,9 @@ automation:
         # between 36 and 40 (both alerts live at once). This is the same mirror that was
         # missed on 07-24 and silently killed every garage-freezer rate alert — when a
         # threshold moves, audit every other place that copies it.
-        binary_sensor.garage_fridge_rising: 36
+        # Back to 40 with the absolute warn above (2026-07-31 17:36). The mirror moves in
+        # BOTH directions: tightening and loosening each require the same audit.
+        binary_sensor.garage_fridge_rising: 40
         binary_sensor.kitchen_fridge_rising: 40
         binary_sensor.garage_fridge_freezer_rising: 10
       names:
