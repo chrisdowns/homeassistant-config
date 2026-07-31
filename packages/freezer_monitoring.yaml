@@ -460,9 +460,27 @@ automation:
       - { platform: numeric_state, id: warn,   entity_id: sensor.garage_freezer_temperature,        above: 0,  for: { hours: 2 } }
       - { platform: numeric_state, id: warn,   entity_id: sensor.garage_freezer_temperature,        above: 5,  for: { minutes: 30 } }
       - { platform: numeric_state, id: urgent, entity_id: sensor.garage_freezer_temperature,        above: 10, for: { minutes: 10 } }
-      - { platform: numeric_state, id: warn,   entity_id: sensor.garage_fridge_temperature,         above: 42, for: { minutes: 20 } }
-      - { platform: numeric_state, id: warn,   entity_id: sensor.garage_fridge_temperature,         above: 40, for: { hours: 2 } }
-      - { platform: numeric_state, id: urgent, entity_id: sensor.garage_fridge_temperature,         above: 45, for: { minutes: 10 } }
+      # RETUNED 2026-07-31 for the back-of-top-shelf probe. 42/40/45 were set against a
+      # DOOR-mounted sensor and the two positions differ by ~10°F at the same dial, so
+      # they had become nearly unreachable: three settled nights read 23.9-25.3 floor,
+      # 28.2-29.1 mean, 33.1 defrost-free ceiling.
+      # The binding constraint is the fridge-freezer's auto-defrost, which warms this
+      # probe too. Measured dwell above each candidate line across the three known
+      # episodes (peaks 37.0 / 35.8 / 35.2):
+      #     >34°F: 24.2 / 16.3 / 12.4 min     >36°F: 9.3 / 0 / 0 min
+      #     >38°F: 0 / 0 / 0 min              >40°F: 0 / 0 / 0 min
+      # So >36 with a 30-min gate clears the worst observed defrost by 3.2x, while >34
+      # was rejected: 24.2 min of dwell leaves only ~6 min of margin, and a longer
+      # defrost would page falsely. The 2h line sits at 34 because no defrost can hold
+      # 34°F for two hours (worst was 24 min), so it catches a slow creep that the
+      # 30-min line rides out. Urgent 45 -> 42: nothing normal, defrost included, has
+      # exceeded 37.
+      # ⚠️ This probe reads the COLDEST zone in the box. Door-bin temperature runs ~10°F
+      # warmer, so >36 here means roughly 46 where food actually sits — a good FAILURE
+      # detector, a poor food-safety thermometer. A second probe is the only real fix.
+      - { platform: numeric_state, id: warn,   entity_id: sensor.garage_fridge_temperature,         above: 36, for: { minutes: 30 } }
+      - { platform: numeric_state, id: warn,   entity_id: sensor.garage_fridge_temperature,         above: 34, for: { hours: 2 } }
+      - { platform: numeric_state, id: urgent, entity_id: sensor.garage_fridge_temperature,         above: 42, for: { minutes: 10 } }
       - { platform: numeric_state, id: warn,   entity_id: sensor.kitchen_fridge_temperature,        above: 40, for: { minutes: 10 } }
       - { platform: numeric_state, id: urgent, entity_id: sensor.kitchen_fridge_temperature,        above: 45, for: { minutes: 10 } }
       - { platform: numeric_state, id: warn,   entity_id: sensor.garage_fridge_freezer_temperature, above: 10, for: { minutes: 45 } }
@@ -492,8 +510,13 @@ automation:
       # failure with near-identical latency while surviving an unsampled 95°F day.
       # Tighten toward 44/50 at the 08-01 review if three days including a genuinely
       # hot afternoon stay at or below ~38-40.
-      - { platform: numeric_state, id: warn,   entity_id: sensor.outdoor_kitchen_fridge_temperature, above: 48, for: { minutes: 30 } }
-      - { platform: numeric_state, id: urgent, entity_id: sensor.outdoor_kitchen_fridge_temperature, above: 55, for: { minutes: 10 } }
+      # TIGHTENED 2026-07-31, the review the 48/55 interim was staged for. The condition
+      # was three settled days including a genuinely hot afternoon: floors agree to 0.6°F
+      # (31.3 / 31.5 / 31.5), and 07-29 peaked at just 36.5°F while ambient ran 86-91°F.
+      # True post-move ceiling across all hours is 39.4°F, so 44 keeps ~4.6°F over the
+      # observed maximum and the 30-min gate rides out any brief excursion.
+      - { platform: numeric_state, id: warn,   entity_id: sensor.outdoor_kitchen_fridge_temperature, above: 44, for: { minutes: 30 } }
+      - { platform: numeric_state, id: urgent, entity_id: sensor.outdoor_kitchen_fridge_temperature, above: 50, for: { minutes: 10 } }
     variables:
       names:
         sensor.garage_freezer_temperature: "Garage freezer"
@@ -538,8 +561,15 @@ automation:
       # AIR, so its normal compressor cycle swings ~11°F (33↔44°F) every 45-90 min —
       # each warming limb (~12°F/hr for ~45 min) is indistinguishable from a door-ajar,
       # firing ~7-8 false "steadily warming" pushes/day. Rate+time can't separate the
-      # two for this unit. Covered instead by the absolute >50°F warn and the new 3h-mean
-      # plateau alert (frzmon_outdoor_plateau). Trend sensor kept for dashboard only.
+      # two for this unit. Covered instead by the absolute warn and the 24h-floor detector.
+      # Trend sensor kept for dashboard only.
+      # ⚖️ RE-EXAMINED 2026-07-31 and STILL NOT RE-ADDED, now on a measurement rather than
+      # a guess. The deeper probe damped the swing from ~11°F to ~5-6°F, which looked like
+      # it might finally separate a real excursion from the compressor cycle — but the
+      # steepest NATURAL 45-min warming limb since the move is 7.2°F/hr against a gate of
+      # 8.0°F/hr. An 11% margin is not a detector, it is a coin flip, and raising the
+      # gradient far enough to be safe would put it above what the absolute already
+      # catches. The floor detector remains the real failure signal for this unit.
     variables:
       # The re-arm trigger fires on the DEFROST flag, not on a *_rising sensor, so it has
       # no entry in the lookups below. Map it back to the unit it speaks for; every other
@@ -562,7 +592,12 @@ automation:
         # "steadily warming" alert at all — and the stale gate was the DOMINANT cause.
         # LESSON: retuning a threshold means auditing every OTHER place that mirrors it.
         binary_sensor.garage_freezer_rising: 0
-        binary_sensor.garage_fridge_rising: 40
+        # 40 -> 36 (2026-07-31), mirroring the absolute warn retune above. Leaving this
+        # at 40 while the absolute moved to 36 would have double-paged every excursion
+        # between 36 and 40 (both alerts live at once). This is the same mirror that was
+        # missed on 07-24 and silently killed every garage-freezer rate alert — when a
+        # threshold moves, audit every other place that copies it.
+        binary_sensor.garage_fridge_rising: 36
         binary_sensor.kitchen_fridge_rising: 40
         binary_sensor.garage_fridge_freezer_rising: 10
       names:
