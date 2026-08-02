@@ -570,11 +570,35 @@ automation:
       # suppression window, the only trigger it ever gets is consumed and nothing fires
       # again even though the fridge keeps warming. So when the defrost flag clears,
       # re-evaluate — the shared conditions require the fridge to still be rising.
-      # `for: 3m` is load-bearing, not cosmetic: the freezer reports every ~31s, so one
+      # `for:` here is load-bearing, not cosmetic: the freezer reports every ~31s, so one
       # sample chattering across the 10°F line mid-defrost would read as "defrost over",
       # re-arm, and fire exactly the mid-defrost push this suppression exists to kill.
-      # Costs 3 min of re-arm latency; also absorbs the unknown->off edge at entity creation.
-      - { platform: state, entity_id: binary_sensor.garage_fridge_freezer_defrost, to: "off", id: defrost_cleared, for: { minutes: 3 } }
+      # Also absorbs the unknown->off edge at entity creation.
+      #
+      # 3m -> 30m (2026-08-02). This MUST stay equal to the post-defrost tail in the
+      # suppression condition below, and the two only work as a pair. The tail was added
+      # because the old gate lifted the instant the flag went off, so a `for: 20m` that
+      # matured just after it sailed straight through — which is exactly what happened on
+      # 08-01: defrost ran 19:30->19:57, rising armed at 19:39, matured at 19:59, and the
+      # push went out two minutes after the gate released. Extending the tail alone would
+      # NOT have fixed it: this re-arm fires at flag-off + `for:`, so at 3m it lands
+      # inside a 30m tail and either gets suppressed too (nothing ever re-arms — the
+      # swallowed-alert fail-deadly this trigger exists to prevent) or is exempted and
+      # fires the same push one minute later. Moving both to 30m makes the re-arm land
+      # exactly as the tail expires, where it re-checks whether the fridge is STILL
+      # rising. On the 08-01 trace it is not (rising went off at 19:59), so no push.
+      # COST, accepted, and it is worse than "30 min later" — state it honestly. For a
+      # FAST event the rate alert is not delayed, it is lost. Door ajar at defrost onset,
+      # ~9°F/hr from ~34°F: rising matures mid-defrost (suppressed), the re-arm fires at
+      # flag-off + 30 ≈ onset + 55 min, and by then the probe reads ~42°F — above the
+      # `warn_of` 40 gate in the first condition, which blocks the re-arm too. So the
+      # rate alert for that event never fires at all and the first page is the >42/20m
+      # absolute at ~onset + 70-75 min, against ~30 min under the old config. Not
+      # fail-deadly (the absolute still pages) but the re-arm only ever re-evaluates
+      # events still below 40°F — i.e. precisely NOT the fast ones.
+      # ⚠️ Re-check this after the 08-03 threshold re-derivation: a LOWER warn line
+      # widens the band in which `warn_of` blocks the re-arm.
+      - { platform: state, entity_id: binary_sensor.garage_fridge_freezer_defrost, to: "off", id: defrost_cleared, for: { minutes: 30 } }
       # Outdoor kitchen fridge DROPPED from rate detection 2026-07-24: the probe reads
       # AIR, so its normal compressor cycle swings ~11°F (33↔44°F) every 45-90 min —
       # each warming limb (~12°F/hr for ~45 min) is indistinguishable from a door-ajar,
@@ -649,11 +673,57 @@ automation:
       # exceeded ~25 min (24.8 last night) across six episodes, so 60 min is ~2.4x the
       # envelope; past that the gate self-lifts. Backstop either way: the freezer's own
       # absolute warn (>10°F for 45m) has already paged before the gate expires.
+      #
+      # ➕ POST-DEFROST TAIL, 30 min (2026-08-02). As first shipped this gate released the
+      # instant the flag went off, and the cabinet is still hot for a good while after
+      # that — so a `for: 20m` maturing just past the release fired anyway. It did, on
+      # 08-01 at 19:59, two minutes after the 19:57 release. In the two defrosts since
+      # deploy this gate suppressed nothing — though with only two episodes on record,
+      # one of which needed no suppression, that is weak evidence either way rather than
+      # an indictment of the gate.
+      # Sizing: measured time for the fridge to fall back under 36°F after the flag
+      # clears is +20 min (08-01) and +12 min (08-02), so 30 min is 1.5-2.5x. ⚠️ But the
+      # variable that actually governs a re-arm false push is not that one — it is how
+      # long `garage_fridge_rising` STAYS ON past flag-off, and that is n=1: 2m17s on
+      # 08-01, while on 08-02 rising never armed at all (the mid-shelf probe damped the
+      # limb below the 8°F/hr gate). The margin looks wide, 2.3 min against 30, on one
+      # sample. Re-measure over the next 4-6 defrosts: if any episode has rising still on
+      # at flag-off + 30 with >= 20 min of on-time, the re-arm fires and the tail is
+      # undersized.
+      # Still NOT fail-deadly, for two independent reasons: the tail only applies while
+      # the flag reads 'off' — a dead appliance parks it 'on', where the unchanged 60-min
+      # bound self-lifts — and the tail is itself time-bounded, with the `defrost_cleared`
+      # re-arm firing at exactly its expiry to re-evaluate. That trigger is exempted here
+      # so the two can never race at the 1800s boundary.
+      # ⚠️ KNOWN DEGRADATION, bounded by physics rather than by construction: a sustained
+      # square wave across the 10°F line (flag on <60 min, off <30 min, repeating) keeps
+      # one suppression branch alive indefinitely AND resets the re-arm's `for: 30m` on
+      # every on-transition, so it never matures — muting this unit's rate alert for as
+      # long as the oscillation lasts. The old design degraded here instead of fully
+      # muting. It needs a pathological appliance, and the fridge absolutes (42/20m,
+      # 40/2h, 45/10m) stay live throughout, so this is accepted knowingly.
+      # ⚠️ Restart side effect: the flag is recreated unknown->off at boot, so its
+      # last_changed is the boot stamp and every HA restart imposes a 30-min tail on this
+      # unit's rate alert (and schedules a defrost_cleared at boot+30m, which condition 4
+      # blocks). Largely masked by the sample_count >= 5 restart guard above.
+      # 🛑 WHAT THIS DOES NOT FIX (measured 08-01 23:53 CDT): the shared-cabinet coupling
+      # also fires when the freezer warms WITHOUT crossing 10°F — the fridge probe climbed
+      # 28.9->35.6°F at ~9.3°F/hr with the flag off for 3.9h, and paged. The >10°F flag is
+      # a proxy for "defrost", but the real falsing mechanism is freezer-side heat in the
+      # shared cabinet, which happens sub-threshold too. No tail can suppress that class.
+      # A proxy keyed on freezer RATE rather than level would — that is a design decision,
+      # deliberately not bolted on here.
       - condition: template
         value_template: >-
           {{ subject != 'binary_sensor.garage_fridge_rising'
-             or not (is_state('binary_sensor.garage_fridge_freezer_defrost', 'on')
-                     and (now() - states.binary_sensor.garage_fridge_freezer_defrost.last_changed).total_seconds() < 3600) }}
+             or trigger.id | default('') == 'defrost_cleared'
+             or not (
+                  (is_state('binary_sensor.garage_fridge_freezer_defrost', 'on')
+                   and (now() - states.binary_sensor.garage_fridge_freezer_defrost.last_changed).total_seconds() < 3600)
+                  or
+                  (is_state('binary_sensor.garage_fridge_freezer_defrost', 'off')
+                   and (now() - states.binary_sensor.garage_fridge_freezer_defrost.last_changed).total_seconds() < 1800)
+                ) }}
       # The re-arm trigger must not fire on a fridge that has since stopped warming.
       - condition: template
         value_template: >-
