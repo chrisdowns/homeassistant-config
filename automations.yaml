@@ -623,41 +623,75 @@
   max: 10
 - id: b8d42c63ef795a1a0e3f9c2d5b6a7184
   alias: Overnight Unlocked Backstop
-  description: 'Level-based (state, not event) safety net: any lock unlocked for 10+
-    minutes between 00:10 and 06:00 notifies. Catches missed/suppressed unlock events
-    after the final 00:00 nightly sweep; 21:00-00:00 is covered by the hourly Nightly
-    Door Lock sweeps.'
+  description: 'Periodic SWEEP of every door lock between 00:10 and 06:00: reports any
+    door not CONFIRMED locked for 10+ minutes - unlocked, unavailable, unknown or jammed.
+    Rewritten 2026-08-03 from a transition trigger, which could not see a lock that was
+    already bad when the window opened. Catches missed/suppressed unlock events after the
+    final 00:00 nightly sweep; 21:00-00:00 is covered by the hourly Nightly Door Lock
+    sweeps.'
   triggers:
-  - platform: state
-    entity_id:
+  - trigger: time_pattern
+    minutes: /5
+  variables:
+    lock_ids:
     - lock.level_bolt_matter
     - lock.level_bolt_matter_2
     - lock.level_bolt_matter_3
     - lock.level_bolt_matter_4
     - lock.u_bolt_pro_z_wave_smart_lock
     - lock.exercise_room_lock
-    to: unlocked
-    for: 00:10:00
+    offenders: >-
+      {%- set ns = namespace(items=[]) -%}
+      {%- for e in lock_ids -%}
+        {%- set st = states(e) -%}
+        {%- if st != 'locked' and states[e] is not none
+              and (now() - states[e].last_changed).total_seconds() >= 600 -%}
+          {%- set label = 'UNLOCKED' if st == 'unlocked'
+                    else ('NOT REPORTING' if st in ['unavailable', 'unknown'] else st | upper) -%}
+          {%- set ns.items = ns.items + [(state_attr(e, 'friendly_name') or e) ~ ' - ' ~ label] -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ ns.items | join('; ') }}
   conditions:
+  # Time gate first: it is the cheap deterministic check, so the offender template is
+  # only rendered inside the window. Ordering verified 2026-08-03 by temporarily putting
+  # the template condition first and confirming it evaluated True against live state --
+  # automation-level `variables:` ARE rendered before conditions on this build, so the
+  # `offenders` reference below is safe. (The trace does not echo automation variables
+  # when a condition short-circuits, which makes this impossible to confirm by reading a
+  # normal trace -- hence the explicit test.)
   - condition: time
     after: 00:10:00
     before: 06:00:00
+  - condition: template
+    value_template: '{{ offenders | trim | length > 0 }}'
+  # Cooldown keyed on this automation's OWN last_triggered, the same idiom as
+  # frzmon_per_unit_staleness_sweep: it only advances when the automation actually RUNS
+  # (conditions passed = we notified), so it is a true "last alerted" stamp needing no
+  # helper entity, and conditions are evaluated BEFORE the run so this reads the previous
+  # notification's time. Without it a /5 sweep would send ~70 pushes a night. Every
+  # message lists ALL offenders, so a door going bad inside the cooldown is still
+  # reported on the next pass. last_triggered resets to None on restart, so the first
+  # post-restart alert is immediate - fail-loud, deliberate.
+  - condition: template
+    value_template: >-
+      {% set lt = state_attr('automation.overnight_unlocked_backstop', 'last_triggered') %}
+      {{ lt is none or (now() - lt).total_seconds() > 3600 }}
   actions:
   - data:
-      title: "\U0001F319 Door still UNLOCKED"
-      message: '{{ trigger.to_state.name }} has been unlocked for 10+ minutes overnight'
+      title: "\U0001F319 Door NOT confirmed locked"
+      message: '{{ offenders }} (10+ min overnight).'
     action: notify.mobile_app_chriss_iphone
   - data:
-      title: "\U0001F319 Door still UNLOCKED"
-      message: '{{ trigger.to_state.name }} has been unlocked for 10+ minutes overnight'
+      title: "\U0001F319 Door NOT confirmed locked"
+      message: '{{ offenders }} (10+ min overnight).'
       data:
         channel: Critical Home Alerts
         importance: high
         priority: high
         ttl: 0
     action: notify.mobile_app_pixel_9_pro_xl
-  mode: parallel
-  max: 10
+  mode: single
 - id: c9e53d74a08b46bfa1f2d3c4e5f60892
   alias: Integration Health Check
   description: 'Closes the silent-ZHA-death gap (2026-07-05 outage killed the leak
