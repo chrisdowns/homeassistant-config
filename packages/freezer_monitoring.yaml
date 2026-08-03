@@ -220,6 +220,74 @@ sensor:
     sampling_size: 3200      # 24h @ 30s ≈ 2880; headroom so max_age governs the window
     precision: 1
 
+  # ---- 24h FLOOR for the two FOOD fridges (2026-08-03) ----
+  # Chris, 08-03: "I want warnings when there is, or could be, a problem or a trend
+  # that indicates one might be coming" — not a page every time a door opens. The 24h
+  # floor is that early signal, and it is the one this project already proved out on
+  # the outdoor unit: a box loses the ability to PULL DOWN before it loses the danger
+  # zone, so the floor rises days before any absolute line is threatened. Peaks and
+  # means track ambient and usage; the floor tracks the appliance.
+  # Until now only the outdoor unit (which stores water, no food exposure) had one.
+  # ⚠️ sampling_size is deliberately sized off the MQTT PUBLISH cadence, NOT the
+  # observed state-change rate. `sampling_size` bounds an oldest-evicted deque, so the
+  # effective window is min(max_age, sampling_size × cadence) — undersizing it silently
+  # shortens the window and the sensor still looks healthy. That exact trap capped the
+  # trend sensors at ~5 min instead of 30 on 07-27. Tower A publishes ~every 17.7s
+  # (4881/24h ceiling) and the 606 ~every 31s (2787/24h ceiling); observed CHANGE rates
+  # are far lower (~800 and ~200/24h) but a failing unit swings more and logs more.
+  - platform: statistics
+    name: "Garage Fridge 24h Min"
+    unique_id: frzmon_garage_fridge_min_24h
+    entity_id: sensor.garage_fridge_temperature
+    state_characteristic: value_min
+    max_age:
+      hours: 24
+    sampling_size: 5500
+    precision: 1
+
+  - platform: statistics
+    name: "Kitchen Fridge 24h Min"
+    unique_id: frzmon_kitchen_fridge_min_24h
+    entity_id: sensor.kitchen_fridge_temperature
+    state_characteristic: value_min
+    max_age:
+      hours: 24
+    sampling_size: 3200
+    precision: 1
+
+  # ---- CUMULATIVE DANGER-ZONE EXPOSURE (2026-08-03) ----
+  # THE DEFECT THIS FIXES, measured rather than theorised: on 07-27 the garage fridge
+  # spent 217.4 minutes above 40°F in one day, but its longest CONTINUOUS run above 40
+  # was only 69.7 min — so `>40 for 2h` never matured and nothing fired, on a day that
+  # exceeded the USDA cumulative limit by nearly 2x. A `for:` gate demands an unbroken
+  # breach; a fridge cycling across its own line resets it every few minutes (~70 resets
+  # on 07-28 alone). The USDA rule is CUMULATIVE time in the 40-140°F danger zone, so
+  # the instrument has to count minutes, not require continuity.
+  # (Caveat kept for honesty: the probe was DOOR-mounted on 07-27, the warmest zone in
+  # the box, so real food risk that day was lower than 217 min implies. The mechanism
+  # failure is real regardless, and the probe now sits mid-shelf — an actual food zone.)
+  # history_stats reads from the recorder, so these survive a restart rather than
+  # re-arming from zero the way a `for:` timer does.
+  - platform: history_stats
+    name: "Garage Fridge Hours Above 40F 24h"
+    unique_id: frzmon_garage_fridge_danger_24h
+    entity_id: binary_sensor.garage_fridge_above_40
+    state: "on"
+    type: time
+    end: "{{ now() }}"
+    duration:
+      hours: 24
+
+  - platform: history_stats
+    name: "Kitchen Fridge Hours Above 40F 24h"
+    unique_id: frzmon_kitchen_fridge_danger_24h
+    entity_id: binary_sensor.kitchen_fridge_above_40
+    state: "on"
+    type: time
+    end: "{{ now() }}"
+    duration:
+      hours: 24
+
 # ---------------------------------------------------------------------------
 # PER-UNIT LAST-SEEN STAMPS (2026-07-24) — the fix for the shared-topic hole
 # documented at lines 104-107. These fire on the MQTT MESSAGE, so they are
@@ -303,6 +371,26 @@ template:
         icon: mdi:snowflake-melt
         state: >-
           {{ states('sensor.garage_fridge_freezer_temperature') | float(-99) > 10 }}
+
+      # ---- DANGER-ZONE FLAGS (2026-08-03) ----
+      # Plumbing only: these exist so the history_stats sensors above have a binary
+      # state to accumulate. 40°F is the USDA refrigeration line. Nothing alerts on
+      # these directly — a bare "above 40" would page on every door opening, which is
+      # exactly what Chris asked NOT to happen. The alert is on the 24h TOTAL.
+      # float(-99) defaults COLD on a missing/garbage reading so a dead sensor cannot
+      # silently accumulate danger-zone minutes and page; the staleness sweep and the
+      # offline alert are what cover an absent sensor.
+      - name: "Garage Fridge Above 40"
+        unique_id: frzmon_garage_fridge_above_40
+        icon: mdi:thermometer-alert
+        state: >-
+          {{ states('sensor.garage_fridge_temperature') | float(-99) > 40 }}
+
+      - name: "Kitchen Fridge Above 40"
+        unique_id: frzmon_kitchen_fridge_above_40
+        icon: mdi:thermometer-alert
+        state: >-
+          {{ states('sensor.kitchen_fridge_temperature') | float(-99) > 40 }}
 
   - sensor:
       - name: "433 Reception Worst Gap"
@@ -391,21 +479,30 @@ binary_sensor:
         min_gradient: 0.002222
         min_samples: 4
         max_samples: 150        # 606 ~31s state-change cadence -> 2700s needs ~87
-      garage_fridge_freezer_rising:     # fridge-class, DEFROST-TOLERANT: ~13 F/hr over 45 min
-        # min_gradient raised 0.002222->0.0035 (2026-07-23): the daily auto-defrost
-        # ramps ~1.1 F/min (66 F/hr) but the 8 F/hr setting also tripped on normal
-        # band drift/reload noise. LOW CONFIDENCE — revisit after a week of data.
+      garage_fridge_freezer_rising:     # fridge-class, DEFROST-TOLERANT
+        # 0.002222 -> 0.0035 (2026-07-23, LOW CONFIDENCE, tuned against a then-broken
+        # ~31-min window) -> 0.0075 (2026-08-03, MEASURED over 3.5 days of the corrected
+        # 45-min window). The 07-23 note asked for a re-check after a week of data; this
+        # is it, and the old value was far too low.
+        # Measured 45-min rolling gradient, n=5199 samples: p90 14.2, p95 15.2 F/hr for
+        # normal cycling, against defrost ramps that reach 69-71 F/hr. The old gate of
+        # 12.6 F/hr sat BELOW the normal p90, so 18.8% of all samples exceeded it and the
+        # sensor flapped ~10x/night on the ~55-min compressor cycle; only the automation's
+        # `for: 20m` kept most of that off Chris's phone, and twice on 08-01 it did not
+        # (17:35 and 23:45 pushes). At 27 F/hr the longest NON-defrost sustained run
+        # collapses from 28.9 min to 3.1 min — far under the 20-min gate — while the
+        # defrost ramp still clears it by 2.6x.
+        # ⚠️ A GATE CHANGE ALONE CANNOT WORK, and this is why the defrost suppression was
+        # extended to this unit in the same commit: the defrost ramp is both steep AND
+        # long, sustaining 28.9-32 min above 27 F/hr, so NO gate value stops it maturing
+        # the 20-min timer (even 35 F/hr still sustains 25.8 min). Raising the number
+        # alone would only have traded ~10 cycling flaps for a defrost push every day.
         friendly_name: "Garage Fridge-Freezer Rising"
         entity_id: sensor.garage_fridge_freezer_temperature
         sample_duration: 2700
-        min_gradient: 0.0035
+        min_gradient: 0.0075     # 27 F/hr — between normal p95 (15.2) and defrost (69-71)
         min_samples: 4
         # 60 -> 150 (606 ~31s cadence; 2700s needs ~87, so 60 capped the window at ~31 min).
-        # ⚠️ WATCH: min_gradient 0.0035 was tuned empirically on 07-23 AGAINST the shorter
-        # ~31-min window. Lengthening to the intended 45 min changes the gradient fit —
-        # expect FEWER flaps (longer window smooths), but re-check flap frequency in a few
-        # days before trusting the tuning. This unit flapped 6x on 07-24 and is flapping
-        # still; the automation's `for: 20m` gate is what has kept it from alerting.
         max_samples: 150
       outdoor_kitchen_fridge_rising:    # DASHBOARD-ONLY as of 2026-07-24 (no longer alerts)
         # Rate alerting for this unit was removed — see the note in frzmon_rising_alerts.
@@ -432,7 +529,10 @@ automation:
   # amplitude-based, so a slow failure that plateaus at a low temp is still caught
   # while normal auto-defrost humps (narrow, <=27 min wide) are filtered out:
   #   Garage freezer        warn >5/30m + >0/2h     urgent >10/10m   (retuned 07-24)
-  #   Garage fridge         warn >42/20m + >40/2h   urgent >45/10m
+  #   Garage fridge         warn >42/20m            urgent >45/10m
+#     plus CUMULATIVE >2h/4h/6h above 40F per 24h (frzmon_danger_zone_cumulative,
+#     2026-08-03) — the >40/2h continuous line was removed because a cycling unit
+#     never sustains it; see the note at the trigger.
   #     >42 catches a fast rise; >40-for-2h catches a stuck-at-41 drift. Both sit
   #     inside the USDA <=40-for-2h food-safety line. 43°F was actually seen 07-16.
   #   Kitchen fridge        warn >40/10m            urgent >45/10m   (unchanged; quiet)
@@ -452,7 +552,8 @@ automation:
       # unit stepped +10°F on 07-23 14:33Z (the battery-swap morning) — 93.6% of the
       # following 48h sat above -5 (band min -13.5 / max -1.7 / median -2.2), so warn
       # fired 3x and re-fired on every restart. Replaced with the SAME two-line shape
-      # proven on the garage fridge (>42/20m + >40/2h) so raising the noisy line does
+      # proven on the garage fridge (>42/20m + >40/2h, the latter since replaced by a
+# cumulative counter) so raising the noisy line does
       # NOT go fail-deadly: >5/30m catches a fast rise, >0-for-2h catches a slow
       # failure that plateaus just above the USDA 0°F freezer line. Urgent unchanged.
       # ⚠️ OPEN: the +10°F step is UNEXPLAINED (probe repositioned during the swap vs
@@ -497,9 +598,23 @@ automation:
       # shared evaporator than the back one did, so re-measure the bump before assuming
       # the old 35-37°F excursions still apply.
       - { platform: numeric_state, id: warn,   entity_id: sensor.garage_fridge_temperature,         above: 42, for: { minutes: 20 } }
-      - { platform: numeric_state, id: warn,   entity_id: sensor.garage_fridge_temperature,         above: 40, for: { hours: 2 } }
+      # REMOVED 2026-08-03: `above: 40, for: { hours: 2 }`. The NUMBER was right — 40°F is
+      # the USDA line — but the SHAPE could not do the job. A `for:` gate needs an unbroken
+      # breach, and this unit cycles across its own line every 10-20 min (~70 resets on
+      # 07-28 alone). Measured consequence: 07-27 logged 217.4 min above 40°F in one day
+      # with a longest continuous run of 69.7 min, so this trigger never matured on a day
+      # that exceeded the USDA CUMULATIVE limit by nearly 2x. Replaced by
+      # frzmon_danger_zone_cumulative below, which counts total minutes over 24h and is
+      # therefore immune to cycling. The >42/20m and >45/10m lines stay exactly as they
+      # were — they cover sharp excursions and are unaffected by this.
       - { platform: numeric_state, id: urgent, entity_id: sensor.garage_fridge_temperature,         above: 45, for: { minutes: 10 } }
-      - { platform: numeric_state, id: warn,   entity_id: sensor.kitchen_fridge_temperature,        above: 40, for: { minutes: 10 } }
+      # 40/10m -> 42/20m (2026-08-03, Chris). The old line was a DOOR-OPENING pager: it
+      # fired 08-01 20:44Z exactly 10 min into a 47.5-min loading excursion that peaked
+      # 40.6°F, which is precisely the alert he asked not to get. Door events on this
+      # unit peak ~40.6 and run under 20 min, so 42/20m clears them; genuine 40°F dwell
+      # is now caught by the cumulative danger-zone counter instead, and >45/10m still
+      # catches a fast failure. Cost: ~10 min later warning on a sharp excursion.
+      - { platform: numeric_state, id: warn,   entity_id: sensor.kitchen_fridge_temperature,        above: 42, for: { minutes: 20 } }
       - { platform: numeric_state, id: urgent, entity_id: sensor.kitchen_fridge_temperature,        above: 45, for: { minutes: 10 } }
       - { platform: numeric_state, id: warn,   entity_id: sensor.garage_fridge_freezer_temperature, above: 10, for: { minutes: 45 } }
       - { platform: numeric_state, id: urgent, entity_id: sensor.garage_fridge_freezer_temperature, above: 15, for: { minutes: 35 } }
@@ -599,6 +714,12 @@ automation:
       # ⚠️ Re-check this after the 08-03 threshold re-derivation: a LOWER warn line
       # widens the band in which `warn_of` blocks the re-arm.
       - { platform: state, entity_id: binary_sensor.garage_fridge_freezer_defrost, to: "off", id: defrost_cleared, for: { minutes: 30 } }
+      # SECOND RE-ARM (2026-08-03), for the fridge-freezer itself. When the suppression
+      # was extended to cover this unit, it inherited the same swallowed-alert exposure
+      # the garage fridge has: a `for: 20m` maturing inside the window consumes the only
+      # trigger it gets. Same entity, same `for:`, distinct id — both fire, and `mode:
+      # parallel` runs each with its own `subject`, so they never interfere.
+      - { platform: state, entity_id: binary_sensor.garage_fridge_freezer_defrost, to: "off", id: defrost_cleared_ff, for: { minutes: 30 } }
       # Outdoor kitchen fridge DROPPED from rate detection 2026-07-24: the probe reads
       # AIR, so its normal compressor cycle swings ~11°F (33↔44°F) every 45-90 min —
       # each warming limb (~12°F/hr for ~45 min) is indistinguishable from a door-ajar,
@@ -617,8 +738,10 @@ automation:
       # no entry in the lookups below. Map it back to the unit it speaks for; every other
       # trigger speaks for itself.
       subject: >-
-        {{ 'binary_sensor.garage_fridge_rising'
-           if trigger.id | default('') == 'defrost_cleared' else trigger.entity_id }}
+        {% set tid = trigger.id | default('') %}
+        {%- if tid == 'defrost_cleared' -%}binary_sensor.garage_fridge_rising
+        {%- elif tid == 'defrost_cleared_ff' -%}binary_sensor.garage_fridge_freezer_rising
+        {%- else -%}{{ trigger.entity_id }}{%- endif -%}
       temp_of:
         binary_sensor.garage_freezer_rising: sensor.garage_freezer_temperature
         binary_sensor.garage_fridge_rising: sensor.garage_fridge_temperature
@@ -641,8 +764,21 @@ automation:
         # threshold moves, audit every other place that copies it.
         # Back to 40 with the absolute warn above (2026-07-31 17:36). The mirror moves in
         # BOTH directions: tightening and loosening each require the same audit.
-        binary_sensor.garage_fridge_rising: 40
-        binary_sensor.kitchen_fridge_rising: 40
+        # 40 -> 42 (2026-08-03), because the >40/2h absolute this mirrored NO LONGER
+        # EXISTS — it was replaced by the cumulative danger-zone counter, leaving >42/20m
+        # as the lowest absolute on this unit. The rule is that warn_of tracks the
+        # short-`for` warn line so the rate alert never double-fires with the absolute
+        # that OWNS a band; with nothing absolute living in 40-42 any more, leaving this
+        # at 40 would have silently suppressed rate alerts and post-defrost re-arms
+        # across a 2°F band that nothing else watches on a fast timescale. Conservative
+        # either way (40 mutes, 42 restores), but it must be DECIDED, not inherited.
+        binary_sensor.garage_fridge_rising: 42
+        # 40 -> 42 (2026-08-03), mirroring the kitchen absolute warn retune in the same
+        # commit. THIS IS THE AUDIT STEP THAT HAS BEEN MISSED TWICE ON THIS BOX (07-24
+        # silently killed every garage-freezer rate alert; 07-31 caught it only in
+        # review). Leaving this at 40 while the absolute moved to 42 would suppress
+        # rate alerts across a 40-42 band that no absolute owns any more.
+        binary_sensor.kitchen_fridge_rising: 42
         binary_sensor.garage_fridge_freezer_rising: 10
       names:
         binary_sensor.garage_freezer_rising: "Garage freezer"
@@ -700,8 +836,10 @@ automation:
       # one suppression branch alive indefinitely AND resets the re-arm's `for: 30m` on
       # every on-transition, so it never matures — muting this unit's rate alert for as
       # long as the oscillation lasts. The old design degraded here instead of fully
-      # muting. It needs a pathological appliance, and the fridge absolutes (42/20m,
-      # 40/2h, 45/10m) stay live throughout, so this is accepted knowingly.
+      # muting. It needs a pathological appliance, and the fridge's other coverage stays
+      # live throughout — absolutes 42/20m and 45/10m, plus the cumulative danger-zone
+      # counter and the 24h floor — so this is accepted knowingly.
+      # (Updated 2026-08-03: this argument used to cite >40/2h, which no longer exists.)
       # ⚠️ Restart side effect: the flag is recreated unknown->off at boot, so its
       # last_changed is the boot stamp and every HA restart imposes a 30-min tail on this
       # unit's rate alert (and schedules a defrost_cleared at boot+30m, which condition 4
@@ -713,10 +851,26 @@ automation:
       # shared cabinet, which happens sub-threshold too. No tail can suppress that class.
       # A proxy keyed on freezer RATE rather than level would — that is a design decision,
       # deliberately not bolted on here.
+      # ➕ EXTENDED 2026-08-03 to cover the fridge-freezer itself. Its rate gate was
+      # re-fitted 12.6 -> 27 F/hr in the same commit, which kills the cycling noise but
+      # CANNOT stop the defrost: that ramp sustains 28.9-32 min above 27 F/hr against a
+      # 20-min timer, and no gate value fixes it (35 F/hr still sustains 25.8 min). So
+      # the unit that DEFINES the defrost flag now also honours it.
+      # ⚠️ BE PRECISE ABOUT WHY THIS IS SAFE — the obvious argument is WRONG. "The 60-min
+      # bound self-lifts" does NOT rescue this unit: a self-lifting CONDITION cannot
+      # resurrect a TRIGGER that was already consumed. A slow failure that crosses 10°F
+      # eats the ff rising trigger inside the suppression window, and the re-arm (flag ->
+      # off, 30m) never arrives on a unit whose flag is stuck on — so the ff RATE path is
+      # structurally lost for exactly that event. This is only acceptable because the
+      # rate path is not the backstop: the unit's own absolutes (>10/45m and >15/35m)
+      # own the dead-appliance case and page well before the rate alert would have
+      # mattered. Do not "fix" this by unbounding the gate — the absolutes are the
+      # guarantee, and the suppression exists solely to stop defrost false alarms.
       - condition: template
         value_template: >-
-          {{ subject != 'binary_sensor.garage_fridge_rising'
-             or trigger.id | default('') == 'defrost_cleared'
+          {{ subject not in ['binary_sensor.garage_fridge_rising',
+                             'binary_sensor.garage_fridge_freezer_rising']
+             or trigger.id | default('') in ['defrost_cleared', 'defrost_cleared_ff']
              or not (
                   (is_state('binary_sensor.garage_fridge_freezer_defrost', 'on')
                    and (now() - states.binary_sensor.garage_fridge_freezer_defrost.last_changed).total_seconds() < 3600)
@@ -724,12 +878,13 @@ automation:
                   (is_state('binary_sensor.garage_fridge_freezer_defrost', 'off')
                    and (now() - states.binary_sensor.garage_fridge_freezer_defrost.last_changed).total_seconds() < 1800)
                 ) }}
-      # The re-arm trigger must not fire on a fridge that has since stopped warming.
+      # A re-arm must not fire on a unit that has since stopped warming. Keyed on
+      # `subject` rather than a hardcoded entity so it covers both re-arm triggers.
       - condition: template
         value_template: >-
-          {{ trigger.id | default('') != 'defrost_cleared'
-             or (is_state('binary_sensor.garage_fridge_rising', 'on')
-                 and (now() - states.binary_sensor.garage_fridge_rising.last_changed).total_seconds() >= 1200) }}
+          {{ trigger.id | default('') not in ['defrost_cleared', 'defrost_cleared_ff']
+             or (is_state(subject, 'on')
+                 and (now() - states[subject].last_changed).total_seconds() >= 1200) }}
     action:
       - variables:
           n: "{{ names[subject] }}"
@@ -781,6 +936,118 @@ automation:
           critical: false
           title: "🧊 Outdoor kitchen fridge not cooling down"
           message: "Outdoor kitchen fridge has not gotten below {{ states('sensor.outdoor_kitchen_fridge_24h_min') | float | round(1) }}°F in 24h (healthy floor is ~31°F). It is failing to pull down — compressor or door seal, not just hot weather."
+
+  # ============================================================================
+  # CUMULATIVE DANGER-ZONE EXPOSURE (2026-08-03) — the food-safety instrument.
+  # ============================================================================
+  # Chris, 08-03: "are the existing temp thresholds healthy or do we need to lower them
+  # for food safety concerns? I don't want a warning any time a door is opened, I want
+  # warnings when there is, or could be, a problem."
+  # The answer was that the LINES were right and the SHAPE was wrong. USDA counts
+  # CUMULATIVE time in the 40-140°F danger zone, but every `above/for` gate on this box
+  # demands an unbroken breach, which a cycling fridge never delivers. Measured on the
+  # garage fridge, 07-27: 217.4 min above 40°F across the day, longest continuous run
+  # 69.7 min, `>40 for 2h` never matured. This counts minutes instead.
+  # 2h = the USDA discard line. FALSE-ALARM CHECK across 7 days: the kitchen fridge's
+  # worst day was 48.6 min (2.5x margin) and the garage fridge post-move is 0.0 min, so
+  # ordinary door openings — single-digit minutes each — cannot approach it. That is
+  # what makes this satisfy "not every time a door is opened".
+  # NOT critical: by the time this fires the exposure has already happened, so it is a
+  # "check your food" message, not a wake-up. The sharp lines (>42/20m, >45/10m on the
+  # garage fridge, >45/10m on the kitchen) remain the fast-failure alarms.
+  - id: frzmon_danger_zone_cumulative
+    alias: "Freezer monitor — cumulative time in the danger zone (24h)"
+    mode: parallel
+    max: 10
+    # ⚠️ TIERED ON PURPOSE — a single `above: 2` LATCHES and opens a worse gap than the
+    # trigger this replaced. `numeric_state` fires on CROSSING only, and once a bad
+    # cycling day pushes the counter past 2h it stays there for ~24h. If the compressor
+    # then quits inside that window and the box parks at 41°F, there is no re-crossing to
+    # fire on, 41°F never reaches >42/20m or >45/10m, and the 24h floor needs ~24-25h to
+    # notice — while the removed `>40 for 2h` would have paged in two hours. That
+    # sequence is not a coincidence either; a day of excursions followed by a plateau is
+    # what a dying appliance actually looks like.
+    # A plateau accumulates 1 min/min, so the 4h and 6h tiers re-page ~2h apart and
+    # restore the old latency. `for: 5m` stops a counter hovering exactly on a line from
+    # chattering out repeated pushes — deliberately NOT a shared cooldown, which would
+    # let one fridge's page mute the other's for an hour.
+    trigger:
+      - { platform: numeric_state, entity_id: sensor.garage_fridge_hours_above_40f_24h,  above: 2, for: { minutes: 5 }, id: garage_fridge }
+      - { platform: numeric_state, entity_id: sensor.garage_fridge_hours_above_40f_24h,  above: 4, for: { minutes: 5 }, id: garage_fridge }
+      - { platform: numeric_state, entity_id: sensor.garage_fridge_hours_above_40f_24h,  above: 6, for: { minutes: 5 }, id: garage_fridge }
+      - { platform: numeric_state, entity_id: sensor.kitchen_fridge_hours_above_40f_24h, above: 2, for: { minutes: 5 }, id: kitchen_fridge }
+      - { platform: numeric_state, entity_id: sensor.kitchen_fridge_hours_above_40f_24h, above: 4, for: { minutes: 5 }, id: kitchen_fridge }
+      - { platform: numeric_state, entity_id: sensor.kitchen_fridge_hours_above_40f_24h, above: 6, for: { minutes: 5 }, id: kitchen_fridge }
+    variables:
+      names:
+        garage_fridge: "Garage fridge"
+        kitchen_fridge: "Kitchen fridge"
+      temp_of:
+        garage_fridge: sensor.garage_fridge_temperature
+        kitchen_fridge: sensor.kitchen_fridge_temperature
+      n: "{{ names[trigger.id] }}"
+    action:
+      - action: script.frzmon_notify
+        data:
+          critical: false
+          title: "🌡️ {{ n }} — 2h+ above 40°F today"
+          message: "{{ n }} has spent {{ (states(trigger.entity_id) | float * 60) | round(0) }} minutes above 40°F in the last 24h (now {{ states(temp_of[trigger.id]) | float | round(1) }}°F). That is the USDA discard line for refrigerated food — check contents and the door seal."
+
+  # ============================================================================
+  # 24h FLOOR — the early-warning trend layer for the two FOOD fridges (2026-08-03)
+  # ============================================================================
+  # This is the "trend that indicates a problem might be coming" Chris asked for. A
+  # refrigerator loses the ability to PULL DOWN before it loses the danger zone, so the
+  # floor rises first — days before any absolute line is threatened. Peaks and means
+  # track weather and door usage; the floor tracks the appliance. That principle was
+  # established on this system by the outdoor unit (stable floor 33.0-34.6 while daily
+  # maxima climbed 48.5 -> 55.4, which correctly read as heat load, not failure).
+  # Until now no FOOD unit had one — only the water-only outdoor fridge did.
+  # Lines set by the same method as frzmon_outdoor_pulldown: ~4.5-6°F of headroom over
+  # the measured healthy floor.
+  #   garage fridge  floors 32.0 / 33.6 post-move (mid-shelf probe)  -> 38
+  #   kitchen fridge floors 30.7-33.6 over 8 days                    -> 38
+  # ⚠️ THE GARAGE FRIDGE LINE RESTS ON ONLY TWO POST-MOVE DAYS and its floor is still
+  # trending up as baseline #5 settles (32.0 -> 33.6). Re-check it after a few more
+  # days; if the floor stabilises above ~34 this needs to move up, and a floor that
+  # keeps climbing is itself the signal this alert exists to catch.
+  - id: frzmon_fridge_floor
+    alias: "Freezer monitor — fridge not pulling down (24h floor)"
+    mode: parallel
+    max: 10
+    trigger:
+      # GARAGE AT 40, not 38 (Chris's call 2026-08-03): its floor is still climbing as
+      # baseline #5 settles (32.0 -> 33.6 in two days) and a 38 line risked paging around
+      # 08-06 with nothing wrong. 40 buys headroom through the settling period.
+      # Semantics worth keeping straight: at 40 this reads "the box never got below the
+      # USDA line at ANY point in 24h", which is an unambiguous failure statement — but
+      # it is a LATER warning than the ~4.5-6°F-over-floor rule used for the outdoor unit
+      # and the kitchen. ⚠️ Revisit once the floor stabilises; if it settles ~34, the
+      # equivalent early line is ~38-39 and this should come back down.
+      - platform: numeric_state
+        entity_id: sensor.garage_fridge_24h_min
+        above: 40
+        for: { minutes: 60 }
+        id: garage_fridge
+      - platform: numeric_state
+        entity_id: sensor.kitchen_fridge_24h_min
+        above: 38
+        for: { minutes: 60 }
+        id: kitchen_fridge
+    variables:
+      names:
+        garage_fridge: "Garage fridge"
+        kitchen_fridge: "Kitchen fridge"
+      floors:
+        garage_fridge: "~32-34°F"
+        kitchen_fridge: "~31-33°F"
+      n: "{{ names[trigger.id] }}"
+    action:
+      - action: script.frzmon_notify
+        data:
+          critical: false
+          title: "📉 {{ n }} losing its pull-down"
+          message: "{{ n }} has not been below {{ states(trigger.entity_id) | float | round(1) }}°F at any point in 24h (healthy floor {{ floors[trigger.id] }}). Nothing is spoiled yet — this is the early sign the box is starting to struggle. Worth checking the coils, seal and how full it is."
 
   # ===================== OFFLINE (no reading) =====================
   # `for` widened 1m -> 15m to ride out brief WiFi/reception gaps; a genuinely dead
