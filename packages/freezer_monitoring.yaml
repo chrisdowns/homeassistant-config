@@ -648,7 +648,22 @@ automation:
       # (31.3 / 31.5 / 31.5), and 07-29 peaked at just 36.5°F while ambient ran 86-91°F.
       # True post-move ceiling across all hours is 39.4°F, so 44 keeps ~4.6°F over the
       # observed maximum and the 30-min gate rides out any brief excursion.
-      - { platform: numeric_state, id: warn,   entity_id: sensor.outdoor_kitchen_fridge_temperature, above: 44, for: { minutes: 30 } }
+      # 44 -> 40 (2026-08-05, Chris's call at the 48h review of 9a6008e). 44 was sized
+      # against the PRE-relocation unit that swung to 55; ten settled days since put the
+      # daily peak at 36.5-39.4 and the floor at 29.9-30.8, so 44 sat 7.4°F above anything
+      # this box has actually done and could only fire on a catastrophic failure. 40 is the
+      # USDA line and makes this a real early warning.
+      # ⚠️ MARGIN IS NOW 0.6°F ON PEAKS, not 4.6°F — 07-30 reached 39.4. What keeps this
+      # quiet is the 30-min gate, not the headroom: cumulative time above 40°F over the
+      # last 10 days is ZERO, and the compressor cycle (~45-90 min, ~11°F swing on an AIR
+      # probe) cannot hold 40+ for 30 min while the unit is healthy. If a hotter afternoon
+      # than 07-30 produces a false page, the fix is 42 (still 2°F inside the old value),
+      # NOT reverting to 44.
+      # AUDITED for mirrors per the 07-24 lesson: this unit is DASHBOARD-ONLY for rate
+      # detection (line ~507), so it has NO entry in `temp_of`/`warn_of` and there is no
+      # gate to keep in step. Its 24h-floor alert (>36/60m) is a different sensor and is
+      # unaffected. Guardian dashboard bands still cite the old numbers — cosmetic.
+      - { platform: numeric_state, id: warn,   entity_id: sensor.outdoor_kitchen_fridge_temperature, above: 40, for: { minutes: 30 } }
       - { platform: numeric_state, id: urgent, entity_id: sensor.outdoor_kitchen_fridge_temperature, above: 50, for: { minutes: 10 } }
     variables:
       names:
